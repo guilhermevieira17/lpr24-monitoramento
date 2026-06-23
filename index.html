@@ -17,13 +17,231 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
 .clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
+.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transp/**
+ * relay_spx_lpr24.js  v5 — Supabase como ponte
+ * =============================================
+ * O relay captura os dados do SPX e salva no Supabase.
+ * O painel faz polling a cada 30s e atualiza automaticamente.
+ * 
+ * COMO USAR:
+ * 1. Abra o painel: guilhermevieira17.github.io/lpr24-monitoramento
+ * 2. Cole este script no console do SPX (F12)
+ * 3. Clique em "Procurar" — dados vão ao Supabase → painel atualiza
+ */
+(function () {
+  'use strict';
+
+  const HUB         = 'LM Hub_PR_SaoJosedosPinhais';
+  const SUPABASE_URL = 'https://tslhvfvwhybaqhkwbgyl.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzbGh2ZnZ3aHliYXFoa3diZ3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDUwOTMxMzIsImV4cCI6MjA2MDY2OTEzMn0.WNgPKhqPPBRxIHHHXRMGGKj2qAyiMU7Sk79YZXt5Bzg';
+  const TABLE       = 'fleet_monitor';
+
+  let _all = {}, _base = null, _params = null;
+  let saveTimer = null;
+
+  // ─── Salva no Supabase ───────────────────────────────────────────
+  async function saveToSupabase(drivers, summary) {
+    const payload = {
+      hub_id:    HUB,
+      ts:        new Date().toISOString(),
+      drivers:   drivers,
+      summary:   summary || {},
+      total:     drivers.length,
+    };
+
+    try {
+      // Upsert — sempre sobrescreve o registro do hub
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?hub_id=eq.${encodeURIComponent(HUB)}`, {
+        method:  'DELETE',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      });
+
+      const ins = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
+        method:  'POST',
+        headers: {
+          'apikey':       SUPABASE_KEY,
+          'Authorization':'Bearer ' + SUPABASE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer':       'return=minimal',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (ins.ok) {
+        console.log(`%c[relay] ✓ ${drivers.length} motoristas salvos no Supabase`, 'color:#1d9e75;font-weight:bold');
+      } else {
+        const err = await ins.text();
+        console.warn('[relay] Supabase erro:', err);
+        // Tenta criar a tabela se não existir
+        console.log('%c[relay] Tabela não existe. Crie via SQL no Supabase (veja abaixo).', 'color:#d85a30');
+        console.log(`
+-- Cole no SQL Editor do Supabase:
+CREATE TABLE IF NOT EXISTS fleet_monitor (
+  id        BIGSERIAL PRIMARY KEY,
+  hub_id    TEXT NOT NULL,
+  ts        TIMESTAMPTZ DEFAULT NOW(),
+  drivers   JSONB,
+  summary   JSONB,
+  total     INT
+);
+ALTER TABLE fleet_monitor ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHECK (true);
+        `);
+      }
+    } catch(e) {
+      console.warn('[relay] Supabase falhou:', e.message);
+    }
+  }
+
+  // ─── Debounce do save ────────────────────────────────────────────
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const merged = Object.values(_all).flat();
+      if (merged.length > 0) saveToSupabase(merged, window.__relaySummary__);
+    }, 1500);
+  }
+
+  // ─── Extratores ──────────────────────────────────────────────────
+  const ROUTES = [
+    { key: 'drivers',     rx: /driver.*list|fleet.*driver|delivery.*progress|driverProgress/i },
+    { key: 'hub_summary', rx: /hub.*stat|summary|lm.*overview|hubOverview|hub.*perf/i },
+    { key: 'onhold',      rx: /on.?hold/i },
+    { key: 'exceptions',  rx: /exception|tratativa/i },
+    { key: 'delivery',    rx: /delivery|entrega/i },
+  ];
+  function classify(url) { for(const r of ROUTES) if(r.rx.test(url)) return r.key; return null; }
+
+  function extractList(obj) {
+    if(!obj) return null;
+    if(Array.isArray(obj))            return obj;
+    if(Array.isArray(obj.data))       return obj.data;
+    if(Array.isArray(obj.data?.list)) return obj.data.list;
+    if(Array.isArray(obj.result))     return obj.result;
+    if(Array.isArray(obj.drivers))    return obj.drivers;
+    if(obj.data&&typeof obj.data==='object') return extractList(obj.data);
+    return null;
+  }
+
+  function extractPageInfo(obj) {
+    const d = obj?.data || obj;
+    return {
+      page:  d?.pageNo||d?.page||d?.current||d?.pageNum||1,
+      size:  d?.pageSize||d?.page_size||d?.size||10,
+      total: d?.total||d?.totalCount||d?.total_count||0,
+    };
+  }
+
+  function detectBase(url) {
+    try {
+      const u = new URL(url, location.origin);
+      _base   = u.origin + u.pathname;
+      _params = Object.fromEntries(u.searchParams.entries());
+    } catch(e){}
+  }
+
+  function mergeAndSave(list, info, url) {
+    if(!list?.length) return;
+    _all[info.page] = list;
+    console.log(`[relay] página ${info.page} — ${Object.values(_all).flat().length} motoristas acumulados`);
+    if(!_base) detectBase(url);
+    scheduleSave();
+  }
+
+  async function fetchAllPages(base, params, total) {
+    console.log(`%c[relay] Auto-paginação: ${total} páginas`, 'color:#EE4D2D;font-weight:bold');
+    for(let p=2; p<=Math.min(total,20); p++) {
+      try {
+        const ps = {...params};
+        if('pageNo'  in ps) ps.pageNo=p;  else
+        if('page'    in ps) ps.page=p;    else
+        if('current' in ps) ps.current=p; else
+        if('pageNum' in ps) ps.pageNum=p; else
+        { ps.pageNo=p; ps.page=p; }
+        const url = base+'?'+new URLSearchParams(ps).toString();
+        const res = await fetch(url,{credentials:'include'});
+        const obj = await res.json();
+        const list = extractList(obj);
+        if(list?.length) mergeAndSave(list,{page:p},url);
+        await new Promise(r=>setTimeout(r,350));
+      } catch(e){ console.warn(`[relay] pg ${p}:`,e); }
+    }
+    console.log('%c[relay] Auto-paginação concluída ✓','color:#1d9e75;font-weight:bold');
+  }
+
+  function handle(type, url, obj) {
+    if(type==='drivers'||type==='delivery') {
+      const list=extractList(obj), info=extractPageInfo(obj);
+      if(list?.length) {
+        mergeAndSave(list,info,url);
+        if((info.page<=1)&&info.total>info.size&&_base)
+          setTimeout(()=>fetchAllPages(_base,_params,Math.ceil(info.total/info.size)),600);
+      }
+    } else if(/hub_summary/.test(type)) {
+      const d=obj?.data?.data||obj?.data?.result||obj?.data||obj;
+      window.__relaySummary__ = {
+        exp:  d?.totalAssigned||d?.expedited,
+        del:  d?.delivering||d?.inDelivery,
+        done: d?.delivered||d?.success,
+        oh:   d?.onHold||d?.on_hold,
+        perf: d?.centerPerformance||d?.center_performance,
+      };
+    }
+  }
+
+  // ─── Intercepta fetch ────────────────────────────────────────────
+  const _F = window.fetch;
+  window.fetch = async function(input,init) {
+    const url=typeof input==='string'?input:input?.url||'';
+    const type=classify(url);
+    const resp=await _F.apply(this,arguments);
+    if(type) resp.clone().json().then(obj=>handle(type,url,obj)).catch(()=>{});
+    return resp;
+  };
+
+  // ─── Intercepta XHR ──────────────────────────────────────────────
+  const _xO=XMLHttpRequest.prototype.open, _xS=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,url){ this.__u__=url; this.__t__=classify(url); return _xO.apply(this,arguments); };
+  XMLHttpRequest.prototype.send=function(){
+    if(this.__t__){ const s=this; this.addEventListener('load',function(){ try{handle(s.__t__,s.__u__,JSON.parse(s.responseText));}catch(e){} }); }
+    return _xS.apply(this,arguments);
+  };
+
+  // ─── Auto-refresh a cada 5 min ───────────────────────────────────
+  setInterval(()=>{
+    const b=[...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
+    if(b){ _all={}; b.click(); console.log('[relay] auto-refresh acionado'); }
+  }, 5 * 60 * 1000);
+
+  // ─── Força Procurar na inicialização ─────────────────────────────
+  setTimeout(()=>{
+    const b=[...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
+    if(b) b.click();
+  }, 800);
+
+  // ─── Comando manual ──────────────────────────────────────────────
+  window.__relayCapturar=function(n){ if(!_base){console.warn('[relay] Clique em Procurar primeiro.');return;} _all={}; fetchAllPages(_base,_params,n||9); };
+  window.__relaySummary__={};
+
+  // ─── Confirmação ─────────────────────────────────────────────────
+  console.log(
+    '%c[relay_spx_lpr24] v5 ativo ✓%c  Supabase bridge | hub: '+HUB,
+    'background:#EE4D2D;color:#fff;padding:3px 8px;border-radius:4px;font-weight:bold','color:#888'
+  );
+  console.log('%cPainel:%c  guilhermevieira17.github.io/lpr24-monitoramento','color:#1d9e75;font-weight:bold','font-family:monospace');
+  console.log('%cForçar captura:%c  __relayCapturar(9)','color:#378add;font-weight:bold','font-family:monospace');
+
+})();
+arent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
+.refresh-btn:hover{background:var(--bg)}
 .wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
 .alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
 .alert.show{display:flex}
-.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5}
+.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
 .howto strong{display:block;font-size:13px;margin-bottom:8px}
-.howto code{background:rgba(0,0,0,.07);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:11px}
+.howto code{background:rgba(0,0,0,.08);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:11px}
 .howto.hide{display:none}
+.sql-box{background:#1a1a1a;color:#c0c0c0;border-radius:var(--r);padding:12px 14px;margin-top:10px;font-family:monospace;font-size:11px;line-height:1.6;white-space:pre}
 .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
 .kpi{background:var(--wh);border:1px solid var(--bd);border-radius:var(--rl);padding:14px 16px}
 .kpi-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2);margin-bottom:6px}
@@ -47,8 +265,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{color:var(--tx2);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap;cursor:pointer}
 td{padding:6px 8px;border-bottom:1px solid #f0ede8;vertical-align:middle}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:#faf9f7}
+tr:last-child td{border-bottom:none}tr:hover td{background:#faf9f7}
 .tbl-wrap{overflow-x:auto}
 .bdg{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700}
 .b-ok{background:var(--gnl);color:#3b6d11}.b-warn{background:var(--aml);color:#854f0b}.b-danger{background:var(--rdl);color:#a32d2d}.b-idle{background:var(--bll);color:#185fa5}.b-new{background:var(--gyl);color:#5f5e5a}
@@ -56,16 +273,13 @@ tr:hover td{background:#faf9f7}
 .pb-f{height:100%;border-radius:3px;background:var(--or);transition:width .3s}.pb-f.ok{background:var(--gn)}.pb-f.lo{background:var(--rd)}.pb-f.md{background:var(--am)}
 .oh-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:var(--r);background:var(--bg);margin-bottom:6px}
 .exc{border-left:3px solid var(--am);background:var(--aml);border-radius:0 var(--r) var(--r) 0;padding:8px 12px;margin-bottom:6px;font-size:12px}
-.exc.urg{border-left-color:var(--rd);background:var(--rdl)}
 .log{background:#1a1a1a;color:#aaa;border-radius:var(--r);padding:10px 12px;font-family:monospace;font-size:10px;max-height:120px;overflow-y:auto}
 .log-e{border-bottom:1px solid #2a2a2a;padding:3px 0;display:flex;gap:8px}
 .log-ts{color:#666;flex-shrink:0;min-width:60px}.log-tp{color:var(--or);flex-shrink:0;min-width:55px}
-.search-row{display:flex;gap:8px;margin-bottom:10px}
-.search-row input{flex:1;font-size:12px;padding:6px 10px;border:1px solid var(--bd);border-radius:var(--r);outline:none;background:var(--bg)}
+.search-row input{width:100%;font-size:12px;padding:6px 10px;border:1px solid var(--bd);border-radius:var(--r);outline:none;background:var(--bg);margin-bottom:10px}
 .search-row input:focus{border-color:var(--or)}
 .empty{text-align:center;color:var(--tx3);padding:20px;font-size:12px}
-::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
+::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
 </style>
 </head>
 <body>
@@ -74,21 +288,35 @@ tr:hover td{background:#faf9f7}
     <div class="hdr-dot"></div>
     <div>
       <div class="hdr-title">Monitoramento LPR-24 — Tempo Real</div>
-      <div class="hdr-sub" id="last-upd">Aguardando relay...</div>
+      <div class="hdr-sub" id="last-upd">Aguardando dados...</div>
     </div>
   </div>
   <div class="hdr-right">
-    <div class="pill off" id="pill"><div class="dot blink"></div><span id="pill-lbl">Aguardando relay</span></div>
+    <button class="refresh-btn" onclick="fetchFromSupabase()">↻ Atualizar</button>
+    <div class="pill off" id="pill"><div class="dot blink"></div><span id="pill-lbl">Sem dados</span></div>
     <div class="clock" id="clk">--:--:--</div>
   </div>
 </div>
 <div class="wrap">
   <div class="howto" id="howto">
-    <strong>🚀 Como conectar</strong>
+    <strong>🚀 Como conectar o relay</strong>
     1. Abra o SPX → Entrega → Visão geral dos motoristas<br>
     2. Pressione <strong>F12</strong> → Console<br>
-    3. Cole o <code>relay_spx_lpr24.js</code> e Enter<br>
-    4. Clique <strong>Procurar</strong> no SPX — dados chegam automaticamente
+    3. Cole o conteúdo de <code>relay_spx_lpr24.js</code> e Enter<br>
+    4. Clique <strong>Procurar</strong> no SPX — dados salvos automaticamente<br>
+    5. Este painel atualiza a cada 30 segundos via Supabase<br><br>
+    <strong style="color:#d85a30">⚠ Primeiro uso — crie a tabela no Supabase:</strong>
+    <div class="sql-box">CREATE TABLE IF NOT EXISTS fleet_monitor (
+  id      BIGSERIAL PRIMARY KEY,
+  hub_id  TEXT NOT NULL,
+  ts      TIMESTAMPTZ DEFAULT NOW(),
+  drivers JSONB,
+  summary JSONB,
+  total   INT
+);
+ALTER TABLE fleet_monitor ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "anon_all" ON fleet_monitor
+  FOR ALL TO anon USING (true) WITH CHECK (true);</div>
   </div>
   <div class="alert" id="alert"><span>⚠</span><span id="alert-msg"></span></div>
   <div class="kpis">
@@ -150,18 +378,23 @@ tr:hover td{background:#faf9f7}
     <div class="tbl-wrap">
       <table style="min-width:800px">
         <thead><tr><th onclick="srt('n')">Motorista ↕</th><th>Tipo</th><th onclick="srt('assigned')">Atrib. ↕</th><th onclick="srt('delivered')">Entregues ↕</th><th>Entregando</th><th>Falhas</th><th>On-hold</th><th onclick="srt('pct')">Progresso ↕</th><th>Status</th><th>Último</th></tr></thead>
-        <tbody id="all-b"><tr><td colspan="10" class="empty">Aguardando relay...</td></tr></tbody>
+        <tbody id="all-b"><tr><td colspan="10" class="empty">Aguardando dados do relay...</td></tr></tbody>
       </table>
     </div>
   </div>
   <div class="card">
-    <div class="card-hdr"><div class="card-ttl">Log do relay</div><button onclick="document.getElementById('rlog').innerHTML=''" style="font-size:10px;padding:2px 8px;border:1px solid var(--bd);border-radius:4px;background:transparent;cursor:pointer;color:var(--tx2)">Limpar</button></div>
+    <div class="card-hdr"><div class="card-ttl">Log</div><button onclick="document.getElementById('rlog').innerHTML=''" style="font-size:10px;padding:2px 8px;border:1px solid var(--bd);border-radius:4px;background:transparent;cursor:pointer;color:var(--tx2)">Limpar</button></div>
     <div class="log" id="rlog"><div class="log-e"><span class="log-ts">--:--:--</span><span class="log-tp">INFO</span><span>Painel pronto. Cole o relay no console do SPX.</span></div></div>
   </div>
 </div>
 <script>
+const SUPABASE_URL = 'https://tslhvfvwhybaqhkwbgyl.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzbGh2ZnZ3aHliYXFoa3diZ3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDUwOTMxMzIsImV4cCI6MjA2MDY2OTEzMn0.WNgPKhqPPBRxIHHHXRMGGKj2qAyiMU7Sk79YZXt5Bzg';
+const HUB         = 'LM Hub_PR_SaoJosedosPinhais';
+const TABLE       = 'fleet_monitor';
+
 const $=id=>document.getElementById(id);
-let DRV=[],EXC=[],SUM={},offTab='idle',sKey='pct',sDir=-1,connected=false,lastHB=0;
+let DRV=[],SUM={},offTab='idle',sKey='pct',sDir=-1;
 
 function sn(n){if(!n)return'—';const p=n.trim().split(/\s+/);return cap(p[0])+' '+cap(p[p.length-1]);}
 function cap(s){return s?s[0].toUpperCase()+s.slice(1).toLowerCase():'';}
@@ -171,15 +404,35 @@ function ibdg(t){const m={'Active':['b-ok','Ativo'],'Minor Idle':['b-idle','Idle
 function addLog(tp,msg){const el=$('rlog'),t=new Date().toLocaleTimeString('pt-BR');const d=document.createElement('div');d.className='log-e';d.innerHTML=`<span class="log-ts">${t}</span><span class="log-tp">${tp}</span><span>${msg}</span>`;el.prepend(d);while(el.children.length>80)el.removeChild(el.lastChild);}
 function tick(){$('clk').textContent=new Date().toLocaleTimeString('pt-BR');}tick();setInterval(tick,1000);
 
-function extractList(obj){if(!obj)return null;if(Array.isArray(obj))return obj;if(Array.isArray(obj.data))return obj.data;if(Array.isArray(obj.data?.list))return obj.data.list;if(Array.isArray(obj.result))return obj.result;if(Array.isArray(obj.drivers))return obj.drivers;if(obj.data&&typeof obj.data==='object')return extractList(obj.data);return null;}
 function norm(d){return{n:d.driverName||d.driver_name||d.name||'—',id:d.driverId||d.driver_id||d.id||'—',veh:d.vehicleType||d.vehicle_type||d.veh||'—',assigned:+(d.assigned||d.assignedCount||d.total||0),delivered:+(d.delivered||d.deliveredCount||d.successCount||0),delivering:+(d.delivering||d.deliveringCount||0),failed:+(d.failedDelivery||d.failed||d.failCount||0),onhold:+(d.onHold||d.on_hold||d.onhold||0),pct:parseFloat(d.deliveredPct||d.delivered_pct||d.deliveryProgress||d.progress||d.deliveredPercentage||0),idle:d.idleTag||d.idle_tag||d.fleetStatus||d.status||'—',time:d.timeSinceLastDelivery||d.last_delivery_time||'—',stuck:+(d.stuckAtDelivering||d.stuck||0)};}
 
-function setConnected(){if(connected)return;connected=true;$('pill').className='pill on';$('pill-lbl').textContent='Relay ativo';$('howto').classList.add('hide');addLog('INFO','Relay conectado ✓');}
+// ── Busca dados do Supabase ──────────────────────────────────────
+async function fetchFromSupabase() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/${TABLE}?hub_id=eq.${encodeURIComponent(HUB)}&order=ts.desc&limit=1`,
+      { headers:{ 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer '+SUPABASE_KEY } }
+    );
+    const rows = await res.json();
+    if(!rows?.length){ addLog('WARN','Nenhum dado no Supabase ainda'); return; }
+    const row = rows[0];
+    const list = Array.isArray(row.drivers) ? row.drivers : [];
+    DRV = list.map(norm);
+    SUM = row.summary || {};
+    addLog('DATA',`${DRV.length} motoristas · ${new Date(row.ts).toLocaleTimeString('pt-BR')}`);
+    $('pill').className='pill on';$('pill-lbl').textContent='Dados recebidos';
+    $('howto').classList.add('hide');
+    renderAll();renderKPIs();renderSeg();renderTop();renderOff();renderOH();checkAlerts();
+  } catch(e) {
+    addLog('ERR','Supabase: '+e.message);
+  }
+}
 
-function procDrivers(p){const list=extractList(p.data);if(!list?.length){addLog('WARN','Lista vazia — keys:'+Object.keys(p.data||{}).join(','));return;}DRV=list.map(norm);addLog('DATA',`${DRV.length} motoristas (pág ${p.page||'?'}, ${p.capturedPages||'?'} capturadas)`);renderAll();renderKPIs();renderSeg();renderTop();renderOff();renderOH();checkAlerts();}
-function procSummary(p){const d=p.data?.data||p.data?.result||p.data||{};if(d.totalAssigned||d.expedited)SUM.exp=d.totalAssigned||d.expedited;if(d.delivering||d.inDelivery)SUM.del=d.delivering||d.inDelivery;if(d.delivered||d.success)SUM.done=d.delivered||d.success;if(d.onHold||d.on_hold)SUM.oh=d.onHold||d.on_hold;renderKPIs();}
+// Poll a cada 30s
+fetchFromSupabase();
+setInterval(fetchFromSupabase, 30000);
 
-function renderKPIs(){const ass=DRV.reduce((s,d)=>s+d.assigned,0),del=DRV.reduce((s,d)=>s+d.delivered,0),oh=DRV.reduce((s,d)=>s+d.onhold,0),fl=DRV.reduce((s,d)=>s+d.failed,0),atv=DRV.filter(d=>d.idle==='Active').length,idl=DRV.filter(d=>d.idle==='Minor Idle').length,w2=DRV.filter(d=>/2wh/i.test(d.veh)).length,w4=DRV.filter(d=>/4wh/i.test(d.veh)).length;const taxa=ass>0?((del/ass)*100).toFixed(1)+'%':'—';$('k0').textContent=num(SUM.exp||ass);$('k1').textContent=num(SUM.del||(ass-del));$('k2').textContent=num(SUM.done||del);$('k2s').textContent=taxa+' taxa';$('k3').textContent=num(oh);$('k4').textContent=DRV.length;$('k4s').textContent=atv+' ativos · '+idl+' idle';$('m0').textContent=atv;$('m1').textContent=idl;$('m2').textContent=fl;$('m3').textContent=w2;$('m4').textContent=w4;$('m5').textContent=oh;$('tot-bdg').textContent=DRV.length+' motoristas';}
+function renderKPIs(){const ass=DRV.reduce((s,d)=>s+d.assigned,0),del=DRV.reduce((s,d)=>s+d.delivered,0),oh=DRV.reduce((s,d)=>s+d.onhold,0),fl=DRV.reduce((s,d)=>s+d.failed,0),atv=DRV.filter(d=>d.idle==='Active').length,idl=DRV.filter(d=>d.idle==='Minor Idle').length,w2=DRV.filter(d=>/2wh/i.test(d.veh)).length,w4=DRV.filter(d=>/4wh/i.test(d.veh)).length;const taxa=ass>0?((del/ass)*100).toFixed(1)+'%':'—';$('k0').textContent=num(SUM.exp||ass);$('k1').textContent=num(SUM.del||(ass-del));$('k2').textContent=num(SUM.done||del);$('k2s').textContent=taxa+' taxa';$('k3').textContent=num(oh);$('k4').textContent=DRV.length;$('k4s').textContent=atv+' ativos · '+idl+' idle';$('m0').textContent=atv;$('m1').textContent=idl;$('m2').textContent=fl;$('m3').textContent=w2;$('m4').textContent=w4;$('m5').textContent=oh;$('tot-bdg').textContent=DRV.length+' motoristas';$('last-upd').textContent='Atualizado: '+new Date().toLocaleString('pt-BR');}
 function renderSeg(){const active=DRV.filter(d=>d.idle==='Active').length,started=DRV.filter(d=>d.idle==='Journey Started').length,idle=DRV.filter(d=>d.idle==='Minor Idle').length,other=DRV.length-active-started-idle,del=DRV.reduce((s,d)=>s+d.delivered,0),ass=DRV.reduce((s,d)=>s+d.assigned,0);$('geral-bdg').textContent=(ass>0?((del/ass)*100).toFixed(1):0)+'% entregue';const segs=[{l:'Ativo',c:active,col:'#1d9e75'},{l:'Iniciado',c:started,col:'#888780'},{l:'Idle',c:idle,col:'#d85a30'},{l:'Outro',c:other,col:'#b4b2a9'}].filter(s=>s.c>0);$('seg-bar').innerHTML=segs.map(s=>`<span style="flex:${s.c};background:${s.col}"></span>`).join('');$('seg-leg').innerHTML=segs.map(s=>`<span><span class="leg-dot" style="background:${s.col}"></span>${s.l} (${s.c})</span>`).join('');}
 function renderTop(){const top=[...DRV].filter(d=>d.pct>0).sort((a,b)=>b.pct-a.pct).slice(0,8);$('top-b').innerHTML=top.length?top.map((d,i)=>`<tr><td style="color:var(--tx2);font-size:10px">${i+1}</td><td title="${d.n}">${sn(d.n)}</td><td>${pb(d.pct)}</td><td style="font-weight:700">${d.delivered}</td></tr>`).join(''):'<tr><td colspan="4" class="empty">—</td></tr>';}
 function setOff(t,btn){offTab=t;document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));btn.classList.add('on');renderOff();}
@@ -187,26 +440,7 @@ function renderOff(){const h=$('off-h'),b=$('off-b');if(offTab==='idle'){h.inner
 function renderOH(){const oh=DRV.filter(d=>d.onhold>0).sort((a,b)=>b.onhold-a.onhold);$('oh-list').innerHTML=oh.length?oh.map(d=>`<div class="oh-item"><div><div style="font-weight:700;font-size:12px">${sn(d.n)}</div><div style="font-size:10px;color:var(--tx2)">${d.assigned} atrib. · ${d.pct.toFixed(1)}% entregue</div></div><span class="bdg b-warn">${d.onhold}</span></div>`).join(''):'<div class="empty">Sem on-holds</div>';}
 function renderAll(){const q=(($('srch').value)||'').toLowerCase();const rows=[...DRV].filter(d=>!q||d.n.toLowerCase().includes(q)||String(d.id).includes(q)).sort((a,b)=>{const va=a[sKey]||0,vb=b[sKey]||0;return typeof va==='string'?va.localeCompare(vb)*sDir:(vb-va)*sDir;});$('all-b').innerHTML=rows.length?rows.map(d=>`<tr><td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.n}">${sn(d.n)}</td><td>${d.veh}</td><td>${d.assigned}</td><td style="font-weight:700">${d.delivered}</td><td>${d.delivering}</td><td>${d.failed>0?`<span class="bdg b-danger">${d.failed}</span>`:'0'}</td><td>${d.onhold>0?`<span class="bdg b-warn">${d.onhold}</span>`:'0'}</td><td>${pb(d.pct)}</td><td>${ibdg(d.idle)}</td><td style="color:var(--tx2)">${d.time&&d.time!=='-'&&d.time!=='—'?d.time:'—'}</td></tr>`).join(''):'<tr><td colspan="10" class="empty">Sem resultados</td></tr>';}
 function srt(k){sKey===k?sDir*=-1:(sKey=k,sDir=-1);renderAll();}
-function checkAlerts(){const idle=DRV.filter(d=>d.idle==='Minor Idle'),fail=DRV.reduce((s,d)=>s+d.failed,0);const msgs=[];if(idle.length)msgs.push(idle.length+' motorista(s) idle');if(fail>0)msgs.push(fail+' falha(s)');const a=$('alert');if(msgs.length){a.classList.add('show');$('alert-msg').textContent=msgs.join(' · ');}else a.classList.remove('show');$('last-upd').textContent='Atualizado: '+new Date().toLocaleString('pt-BR');}
-
-// ── Recebe mensagens do iframe bridge (vindo do SPX) ──────────────
-window.addEventListener('message', function(e) {
-  const msg = e.data;
-  if(!msg || msg.source !== 'relay_spx_lpr24') return;
-  lastHB = Date.now();
-  setConnected();
-  const{type,payload}=msg;
-  if(type==='heartbeat'){addLog('♡','heartbeat');return;}
-  if(type==='drivers')       procDrivers(payload);
-  else if(type==='hub_summary') procSummary(payload);
-  else if(type==='onhold'){const l=extractList(payload.data)||[];l.forEach(item=>{const d=DRV.find(x=>x.id==item.driverId||x.id==item.driver_id);if(d)d.onhold=item.count||d.onhold;});renderOH();renderKPIs();addLog('DATA','On-hold: '+l.length);}
-  else if(type==='exceptions'){EXC=extractList(payload.data)||[];$('exc-n').textContent=EXC.length;$('exc-list').innerHTML=EXC.length?EXC.slice(0,8).map(e=>`<div class="exc ${/urgent|critico/i.test(e.priority||'')?'urg':''}"><strong>${e.exceptionType||e.type||'Exceção'}</strong><br><span style="font-size:10px;color:var(--tx2)">${e.driverName||''} · ${e.orderId||''}</span></div>`).join(''):'<div class="empty">Sem exceções</div>';}
-  else if(type==='done') addLog('✓',`Captura completa: ${payload.totalDrivers} motoristas`);
-  else addLog('RAW',type+' — '+JSON.stringify(payload?.data).slice(0,100));
-});
-
-// Watchdog
-setInterval(()=>{if(connected&&Date.now()-lastHB>35000){connected=false;$('pill').className='pill off';$('pill-lbl').textContent='Relay desconectado';addLog('WARN','Sem heartbeat há +30s');}},5000);
+function checkAlerts(){const idle=DRV.filter(d=>d.idle==='Minor Idle'),fail=DRV.reduce((s,d)=>s+d.failed,0);const msgs=[];if(idle.length)msgs.push(idle.length+' motorista(s) idle');if(fail>0)msgs.push(fail+' falha(s)');const a=$('alert');if(msgs.length){a.classList.add('show');$('alert-msg').textContent=msgs.join(' · ');}else a.classList.remove('show');}
 </script>
 </body>
 </html>
