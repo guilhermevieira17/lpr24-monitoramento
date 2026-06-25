@@ -21,7 +21,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .refresh-btn:hover{background:var(--bg)}
 .wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
 .alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
-.alert.show{display:flex}/**
+.alert.show{display:flex}
+.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
+.howto strong{display:block;font-size:13px;margin-bottom:8px}
+.howto code{background:rgba(0,0,0,.08);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:11px}
+.howto.hide{display:none}
+.sql-box{background:#1a1a1a;color:#c0c0c0;border-radius:var(--r);padding:12px 14px;margin-top:10px;font-family:monospace;font-size:11px;line-height:1.6;white-space:pre}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+.kpi{background:var(--wh);border:1px solid var(--bd);border-radius:var(--rl);padding:14px 16px}/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -108,7 +115,7 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
 
   // ─── Extratores ──────────────────────────────────────────────────
   const ROUTES = [
-    { key: 'drivers',     rx: /driver.*list|fleet.*driver|delivery.*progress|driverProgress/i },
+    { key: 'drivers',     rx: /lm.hub.fleet|driver.*list|fleet.*driver|delivery.*progress|driverProgress|lm_hub_fleet/i },
     { key: 'hub_summary', rx: /hub.*stat|summary|lm.*overview|hubOverview|hub.*perf/i },
     { key: 'onhold',      rx: /on.?hold/i },
     { key: 'exceptions',  rx: /exception|tratativa/i },
@@ -145,6 +152,8 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
   }
 
   function mergeAndSave(list, info, url) {
+    // Salva amostra para debug
+    if (list?.length) window.__relayRaw__[info.page || 1] = list;
     if(!list?.length) return;
     _all[info.page] = list;
     console.log(`[relay] página ${info.page} — ${Object.values(_all).flat().length} motoristas acumulados`);
@@ -175,6 +184,8 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
 
   function handle(type, url, obj) {
     if(type==='drivers'||type==='delivery') {
+      // Debug: loga estrutura bruta da resposta
+      if (DEBUG || window.__relayDebug) console.log('[relay raw]', JSON.stringify(obj).slice(0, 500));
       const list=extractList(obj), info=extractPageInfo(obj);
       if(list?.length) {
         mergeAndSave(list,info,url);
@@ -237,13 +248,17 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
 
 })();
 
-.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
-.howto strong{display:block;font-size:13px;margin-bottom:8px}
-.howto code{background:rgba(0,0,0,.08);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:11px}
-.howto.hide{display:none}
-.sql-box{background:#1a1a1a;color:#c0c0c0;border-radius:var(--r);padding:12px 14px;margin-top:10px;font-family:monospace;font-size:11px;line-height:1.6;white-space:pre}
-.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
-.kpi{background:var(--wh);border:1px solid var(--bd);border-radius:var(--rl);padding:14px 16px}
+// ─── DEBUG: inspeciona estrutura da API ──────────────────────────
+// Cole no console do SPX após o relay:
+// __relayInspect()
+window.__relayInspect = function() {
+  const sample = Object.values(window.__relayRaw__ || {})[0]?.[0];
+  if (!sample) { console.log('[relay] Nenhum dado capturado ainda. Clique em Procurar primeiro.'); return; }
+  console.log('%c[relay] Estrutura do motorista:', 'color:#EE4D2D;font-weight:bold');
+  console.log(JSON.stringify(sample, null, 2));
+};
+window.__relayRaw__ = {};
+
 .kpi-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2);margin-bottom:6px}
 .kpi-val{font-size:26px;font-weight:700;line-height:1}.kpi-sub{font-size:11px;color:var(--tx2);margin-top:4px}
 .kpi.c-or{border-left:3px solid var(--or)}.kpi.c-gn{border-left:3px solid var(--gn)}.kpi.c-rd{border-left:3px solid var(--rd)}.kpi.c-am{border-left:3px solid var(--am)}.kpi.c-bl{border-left:3px solid var(--bl)}
@@ -404,7 +419,35 @@ function ibdg(t){const m={'Active':['b-ok','Ativo'],'Minor Idle':['b-idle','Idle
 function addLog(tp,msg){const el=$('rlog'),t=new Date().toLocaleTimeString('pt-BR');const d=document.createElement('div');d.className='log-e';d.innerHTML=`<span class="log-ts">${t}</span><span class="log-tp">${tp}</span><span>${msg}</span>`;el.prepend(d);while(el.children.length>80)el.removeChild(el.lastChild);}
 function tick(){$('clk').textContent=new Date().toLocaleTimeString('pt-BR');}tick();setInterval(tick,1000);
 
-function norm(d){return{n:d.driverName||d.driver_name||d.name||'—',id:d.driverId||d.driver_id||d.id||'—',veh:d.vehicleType||d.vehicle_type||d.veh||'—',assigned:+(d.assigned||d.assignedCount||d.total||0),delivered:+(d.delivered||d.deliveredCount||d.successCount||0),delivering:+(d.delivering||d.deliveringCount||0),failed:+(d.failedDelivery||d.failed||d.failCount||0),onhold:+(d.onHold||d.on_hold||d.onhold||0),pct:parseFloat(d.deliveredPct||d.delivered_pct||d.deliveryProgress||d.progress||d.deliveredPercentage||0),idle:d.idleTag||d.idle_tag||d.fleetStatus||d.status||'—',time:d.timeSinceLastDelivery||d.last_delivery_time||'—',stuck:+(d.stuckAtDelivering||d.stuck||0)};}
+function norm(d){
+  // Mapeamento real da API SPX (lm_hub_fleet_*)
+  const assigned  = +(d.lm_hub_fleet_assigned_qty_td || d.assigned || d.assignedCount || 0);
+  const delivered = +(d.lm_hub_fleet_delivered_order_qty_eod || d.delivered || d.deliveredCount || 0);
+  const failed    = +(d.lm_hub_fleet_failed_delivery_order_qty_eod || d.failed || 0);
+  const onhold    = +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || d.on_hold || 0);
+  const pending   = +(d.lm_hub_fleet_pending_to_take_order_qty || 0);
+  const delivering= assigned - delivered - failed - onhold - pending;
+  const pctRaw    = d.lm_hub_fleet_delivered_pct || d.lm_hub_fleet_deliver_process_pct_eod || 0;
+  const pct       = parseFloat(pctRaw) * (pctRaw <= 1 ? 100 : 1); // converte de decimal se necessário
+  // idle tag: 5=Journey Started, 1=Active, 2=Minor Idle (verificar)
+  const idleNum   = d.lm_hub_fleet_idle_delivery_tag;
+  const idleMap   = {1:'Active', 2:'Minor Idle', 3:'Idle', 5:'Journey Started'};
+  const idle      = idleMap[idleNum] || d.idleTag || d.idle_tag || d.status || '—';
+  return {
+    n:          d.driver_name || d.driverName || d.name || '—',
+    id:         d.driver_id   || d.driverId   || d.id   || '—',
+    veh:        d.vehicle_type|| d.vehicleType || d.veh  || '—',
+    agency:     d.agency_name || '',
+    xpt:        d.xpt_name    || '',
+    assigned, delivered, delivering: Math.max(delivering,0), failed, onhold, pct, idle,
+    time:       d.lm_hub_fleet_idle_delivery_second != null
+                  ? Math.round(d.lm_hub_fleet_idle_delivery_second/3600*10)/10+'h'
+                  : '—',
+    stuck:      +(d.stuckAtDelivering||d.stuck||0),
+    delay:      +(d.lm_hub_fleet_delivery_delay_flag||0),
+    backlog:    +(d.lm_hub_fleet_backlog_order_qty_td||0),
+  };
+}
 
 // ── Busca dados do Supabase ──────────────────────────────────────
 async function fetchFromSupabase() {
