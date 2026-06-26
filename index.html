@@ -13,7 +13,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .hdr-title{font-size:14px;font-weight:600}.hdr-sub{font-size:11px;color:var(--tx2)}
 .hdr-right{display:flex;align-items:center;gap:12px}
 .pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
-.pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-co/**
+.pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -243,9 +245,7 @@ window.__relayInspect = function() {
   console.log(JSON.stringify(sample, null, 2));
 };
 window.__relayRaw__ = {};
-lor:var(--am);color:#854f0b}
-.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
+
 .clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
 .refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
 .refresh-btn:hover{background:var(--bg)}
@@ -421,14 +421,19 @@ function tick(){$('clk').textContent=new Date().toLocaleTimeString('pt-BR');}tic
 
 function norm(d){
   // Mapeamento real da API SPX (lm_hub_fleet_*)
-  const assigned  = +(d.lm_hub_fleet_assigned_qty_td || d.assigned || d.assignedCount || 0);
-  const delivered = +(d.lm_hub_fleet_delivered_order_qty_eod || d.delivered || d.deliveredCount || 0);
-  const failed    = +(d.lm_hub_fleet_failed_delivery_order_qty_eod || d.failed || 0);
-  const onhold    = +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || d.on_hold || 0);
-  const pending   = +(d.lm_hub_fleet_pending_to_take_order_qty || 0);
-  const delivering= assigned - delivered - failed - onhold - pending;
-  const pctRaw    = d.lm_hub_fleet_delivered_pct || d.lm_hub_fleet_deliver_process_pct_eod || 0;
-  const pct       = parseFloat(pctRaw) * (pctRaw <= 1 ? 100 : 1); // converte de decimal se necessário
+  // Campos reais da API SPX lm_hub_fleet_*
+  const delivered  = +(d.lm_hub_fleet_delivered_order_qty_eod || d.lm_hub_fleet_delivered_order_qty_td || d.delivered || 0);
+  const attempted  = +(d.lm_hub_fleet_attemped_deliver_order_qty || 0);
+  const failed     = +(d.lm_hub_fleet_failed_delivery_order_qty_eod || d.lm_hub_fleet_failed_delivery_order_qty_td || d.failed || 0);
+  const onhold     = +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || d.on_hold || 0);
+  const backlog    = +(d.lm_hub_fleet_backlog_order_qty_td || 0);
+  const pending    = +(d.lm_hub_fleet_pending_to_take_order_qty || 0);
+  // assigned = entregues + falhas + em entrega + onhold + pendentes
+  const assigned   = +(d.lm_hub_fleet_assigned_qty_td || d.assigned || d.assignedCount ||
+                       attempted + pending + onhold || 0);
+  const delivering = Math.max(assigned - delivered - failed - onhold - pending, 0);
+  const pctRaw     = d.lm_hub_fleet_delivered_pct || d.lm_hub_fleet_deliver_process_pct_eod || 0;
+  const pct        = parseFloat(pctRaw) * (parseFloat(pctRaw) <= 1 ? 100 : 1);
   // idle tag: 5=Journey Started, 1=Active, 2=Minor Idle (verificar)
   const idleNum   = d.lm_hub_fleet_idle_delivery_tag;
   const idleMap   = {1:'Active', 2:'Minor Idle', 3:'Idle', 5:'Journey Started'};
