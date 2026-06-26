@@ -15,7 +15,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
 .pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
 .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}/**
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
+.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
+.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
+.refresh-btn:hover{background:var(--bg)}
+.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
+.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
+.alert.show{display:flex}
+.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
+.howto strong{display:block;font-size:13px;margin-bottom:8px}/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -211,14 +219,30 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
 
   // ─── Auto-refresh a cada 5 min ───────────────────────────────────
   setInterval(()=>{
-    const b=[...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
-    if(b){ _all={}; b.click(); console.log('[relay] auto-refresh acionado'); }
+    // Garante aba Expedido Hoje
+    const tabs = [...document.querySelectorAll('button, .ant-radio-button-wrapper, [role="tab"], label')];
+    const hojeTab = tabs.find(t => /expedido.*hoje|hoje|today/i.test(t.textContent.trim()));
+    if (hojeTab) hojeTab.click();
+    setTimeout(()=>{
+      const b=[...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
+      if(b){ _all={}; b.click(); console.log('[relay] auto-refresh acionado'); }
+    }, 500);
   }, 5 * 60 * 1000);
 
-  // ─── Força Procurar na inicialização ─────────────────────────────
+  // ─── Garante aba "Expedido Hoje" e clica Procurar ───────────────
   setTimeout(()=>{
-    const b=[...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
-    if(b) b.click();
+    // 1. Clica na aba "Expedido Hoje" se existir
+    const tabs = [...document.querySelectorAll('button, .ant-radio-button-wrapper, [role="tab"], .tab-item, label')];
+    const hojeTab = tabs.find(t => /expedido.*hoje|hoje|today/i.test(t.textContent.trim()));
+    if (hojeTab) {
+      hojeTab.click();
+      console.log('[relay] ✓ Aba "Expedido Hoje" selecionada');
+    }
+    // 2. Clica Procurar após pequeno delay
+    setTimeout(()=>{
+      const b = [...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
+      if(b) b.click();
+    }, 500);
   }, 800);
 
   // ─── Comando manual ──────────────────────────────────────────────
@@ -246,14 +270,6 @@ window.__relayInspect = function() {
 };
 window.__relayRaw__ = {};
 
-.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
-.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
-.refresh-btn:hover{background:var(--bg)}
-.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
-.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
-.alert.show{display:flex}
-.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
-.howto strong{display:block;font-size:13px;margin-bottom:8px}
 .howto code{background:rgba(0,0,0,.08);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:11px}
 .howto.hide{display:none}
 .sql-box{background:#1a1a1a;color:#c0c0c0;border-radius:var(--r);padding:12px 14px;margin-top:10px;font-family:monospace;font-size:11px;line-height:1.6;white-space:pre}
