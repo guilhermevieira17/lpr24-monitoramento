@@ -14,16 +14,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .hdr-right{display:flex;align-items:center;gap:12px}
 .pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
 .pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
-.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
-.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
-.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
-.refresh-btn:hover{background:var(--bg)}
-.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
-.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
-.alert.show{display:flex}
-.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
-.howto strong{display:block;font-size:13px;margin-bottom:8px}/**
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -270,6 +261,15 @@ window.__relayInspect = function() {
 };
 window.__relayRaw__ = {};
 
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
+.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
+.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
+.refresh-btn:hover{background:var(--bg)}
+.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
+.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
+.alert.show{display:flex}
+.howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
+.howto strong{display:block;font-size:13px;margin-bottom:8px}
 .howto code{background:rgba(0,0,0,.08);padding:2px 6px;border-radius:4px;font-family:monospace;font-size:11px}
 .howto.hide{display:none}
 .sql-box{background:#1a1a1a;color:#c0c0c0;border-radius:var(--r);padding:12px 14px;margin-top:10px;font-family:monospace;font-size:11px;line-height:1.6;white-space:pre}
@@ -323,7 +323,7 @@ tr:last-child td{border-bottom:none}tr:hover td{background:#faf9f7}
     </div>
   </div>
   <div class="hdr-right">
-    <button class="refresh-btn" onclick="fetchFromSupabase()">↻ Atualizar</button>
+    <button class="refresh-btn" onclick="fetchFromSupabase(true)">↻ Atualizar</button>
     <div class="pill off" id="pill"><div class="dot blink"></div><span id="pill-lbl">Sem dados</span></div>
     <div class="clock" id="clk">--:--:--</div>
   </div>
@@ -471,30 +471,64 @@ function norm(d){
 }
 
 // ── Busca dados do Supabase ──────────────────────────────────────
-async function fetchFromSupabase() {
+let _lastTs = null;
+
+async function fetchFromSupabase(manual) {
+  // Feedback visual no botão
+  const btn = document.querySelector('.refresh-btn');
+  if (btn) { btn.textContent = '↻ Buscando...'; btn.disabled = true; }
+
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/${TABLE}?hub_id=eq.${encodeURIComponent(HUB)}&order=ts.desc&limit=1`,
-      { headers:{ 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer '+SUPABASE_KEY } }
+      { headers:{ 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer '+SUPABASE_KEY },
+        cache: 'no-store' }
     );
+    if (!res.ok) { addLog('ERR','HTTP '+res.status); return; }
     const rows = await res.json();
-    if(!rows?.length){ addLog('WARN','Nenhum dado no Supabase ainda'); return; }
-    const row = rows[0];
+
+    if (!rows?.length) { addLog('WARN','Nenhum dado no Supabase ainda'); return; }
+
+    const row  = rows[0];
+    const ts   = row.ts;
     const list = Array.isArray(row.drivers) ? row.drivers : [];
+
+    if (!list.length) { addLog('WARN','Registro vazio no Supabase'); return; }
+
+    // Avisa se dados são os mesmos de antes
+    if (ts === _lastTs && manual) {
+      addLog('WARN','Dados iguais ao último fetch — relay ainda não atualizou');
+    }
+    _lastTs = ts;
+
     DRV = list.map(norm);
     SUM = row.summary || {};
-    addLog('DATA',`${DRV.length} motoristas · ${new Date(row.ts).toLocaleTimeString('pt-BR')}`);
-    $('pill').className='pill on';$('pill-lbl').textContent='Dados recebidos';
+
+    const dataHora = new Date(ts).toLocaleString('pt-BR');
+    addLog('DATA', `${DRV.length} motoristas · capturado ${dataHora}`);
+    $('pill').className='pill on';
+    $('pill-lbl').textContent='Dados recebidos';
     $('howto').classList.add('hide');
-    renderAll();renderKPIs();renderSeg();renderTop();renderOff();renderOH();checkAlerts();
+
+    // Re-render completo
+    renderKPIs();
+    renderSeg();
+    renderTop();
+    renderOff();
+    renderOH();
+    renderAll();
+    checkAlerts();
+
   } catch(e) {
     addLog('ERR','Supabase: '+e.message);
+  } finally {
+    if (btn) { btn.textContent = '↻ Atualizar'; btn.disabled = false; }
   }
 }
 
-// Poll a cada 30s
-fetchFromSupabase();
-setInterval(fetchFromSupabase, 30000);
+// Poll a cada 30s + primeira carga
+fetchFromSupabase(false);
+setInterval(() => fetchFromSupabase(false), 30000);
 
 function renderKPIs(){const ass=DRV.reduce((s,d)=>s+d.assigned,0),del=DRV.reduce((s,d)=>s+d.delivered,0),oh=DRV.reduce((s,d)=>s+d.onhold,0),fl=DRV.reduce((s,d)=>s+d.failed,0),atv=DRV.filter(d=>d.idle==='Active').length,idl=DRV.filter(d=>d.idle==='Minor Idle').length,w2=DRV.filter(d=>/2wh/i.test(d.veh)).length,w4=DRV.filter(d=>/4wh/i.test(d.veh)).length;const taxa=ass>0?((del/ass)*100).toFixed(1)+'%':'—';$('k0').textContent=num(SUM.exp||ass);$('k1').textContent=num(SUM.del||(ass-del));$('k2').textContent=num(SUM.done||del);$('k2s').textContent=taxa+' taxa';$('k3').textContent=num(oh);$('k4').textContent=DRV.length;$('k4s').textContent=atv+' ativos · '+idl+' idle';$('m0').textContent=atv;$('m1').textContent=idl;$('m2').textContent=fl;$('m3').textContent=w2;$('m4').textContent=w4;$('m5').textContent=oh;$('tot-bdg').textContent=DRV.length+' motoristas';$('last-upd').textContent='Atualizado: '+new Date().toLocaleString('pt-BR');}
 function renderSeg(){const active=DRV.filter(d=>d.idle==='Active').length,started=DRV.filter(d=>d.idle==='Journey Started').length,idle=DRV.filter(d=>d.idle==='Minor Idle').length,other=DRV.length-active-started-idle,del=DRV.reduce((s,d)=>s+d.delivered,0),ass=DRV.reduce((s,d)=>s+d.assigned,0);$('geral-bdg').textContent=(ass>0?((del/ass)*100).toFixed(1):0)+'% entregue';const segs=[{l:'Ativo',c:active,col:'#1d9e75'},{l:'Iniciado',c:started,col:'#888780'},{l:'Idle',c:idle,col:'#d85a30'},{l:'Outro',c:other,col:'#b4b2a9'}].filter(s=>s.c>0);$('seg-bar').innerHTML=segs.map(s=>`<span style="flex:${s.c};background:${s.col}"></span>`).join('');$('seg-leg').innerHTML=segs.map(s=>`<span><span class="leg-dot" style="background:${s.col}"></span>${s.l} (${s.c})</span>`).join('');}
