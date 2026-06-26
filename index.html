@@ -14,7 +14,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .hdr-right{display:flex;align-items:center;gap:12px}
 .pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
 .pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
-.dot{width:6px;height:6px;border-radius:50%;background:currentColor}/**
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
+.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
+.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
+.refresh-btn:hover{background:var(--bg)}
+.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
+.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -101,11 +107,12 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
 
   // ─── Extratores ──────────────────────────────────────────────────
   const ROUTES = [
-    { key: 'drivers',     rx: /lm.hub.fleet|driver.*list|fleet.*driver|delivery.*progress|driverProgress|lm_hub_fleet/i },
-    { key: 'hub_summary', rx: /hub.*stat|summary|lm.*overview|hubOverview|hub.*perf/i },
-    { key: 'onhold',      rx: /on.?hold/i },
+    // URLs reais confirmadas via Network DevTools do SPX
+    { key: 'drivers',     rx: /operation_lm_fleet_productivity|lm_fleet_productivity|fleet_order\/list|fleet.*driver.*list|driverProgress/i },
+    { key: 'hub_summary', rx: /operation_lm_hub|lm_hub_overview|hub.*summary|hubOverview|lm.*overview/i },
+    { key: 'onhold',      rx: /onhold|on_hold|fleet.*hold/i },
     { key: 'exceptions',  rx: /exception|tratativa/i },
-    { key: 'delivery',    rx: /delivery|entrega/i },
+    { key: 'delivery',    rx: /fleet_order|delivery_progress|entrega/i },
   ];
   function classify(url) { for(const r of ROUTES) if(r.rx.test(url)) return r.key; return null; }
 
@@ -169,6 +176,7 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
   }
 
   function handle(type, url, obj) {
+    if (DEBUG) console.log('[relay handle]', type, url.split('?')[0].split('/').slice(-2).join('/'));
     if(type==='drivers'||type==='delivery') {
       // Debug: loga estrutura bruta da resposta
       if (DEBUG || window.__relayDebug) console.log('[relay raw]', JSON.stringify(obj).slice(0, 500));
@@ -260,13 +268,7 @@ window.__relayInspect = function() {
   console.log(JSON.stringify(sample, null, 2));
 };
 window.__relayRaw__ = {};
-
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
-.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
-.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
-.refresh-btn:hover{background:var(--bg)}
-.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
-.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
+10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
 .alert.show{display:flex}
 .howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
 .howto strong{display:block;font-size:13px;margin-bottom:8px}
