@@ -3,24 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Monitoramento LPR-24</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--or:#EE4D2D;--orl:#fef0ed;--gn:#1d9e75;--gnl:#eaf3de;--am:#ef9f27;--aml:#faeeda;--rd:#e24b4a;--rdl:#fcebeb;--bl:#378add;--bll:#e6f1fb;--gy:#5f5e5a;--gyl:#f1efe8;--tx:#2c2c2a;--tx2:#888780;--tx3:#b4b2a9;--bd:#e0ddd6;--bg:#f8f7f5;--wh:#fff;--r:8px;--rl:12px}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
-.hdr{background:var(--wh);border-bottom:1px solid var(--bd);padding:0 20px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.hdr-dot{width:10px;height:10px;border-radius:50%;background:var(--or);margin-right:8px;flex-shrink:0}
-.hdr-title{font-size:14px;font-weight:600}.hdr-sub{font-size:11px;color:var(--tx2)}
-.hdr-right{display:flex;align-items:center;gap:12px}
-.pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
-.pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
-.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
-.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
-.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
-.refresh-btn:hover{background:var(--bg)}
-.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
-.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:/**
+<title>Monitoramento LPR-24</title>/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -107,12 +90,11 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
 
   // ─── Extratores ──────────────────────────────────────────────────
   const ROUTES = [
-    // URLs reais confirmadas via Network DevTools do SPX
-    { key: 'drivers',     rx: /operation_lm_fleet_productivity|lm_fleet_productivity|fleet_order\/list|fleet.*driver.*list|driverProgress/i },
-    { key: 'hub_summary', rx: /operation_lm_hub|lm_hub_overview|hub.*summary|hubOverview|lm.*overview/i },
-    { key: 'onhold',      rx: /onhold|on_hold|fleet.*hold/i },
+    // URL real confirmada via Network DevTools
+    { key: 'drivers',     rx: /operation_lm_delivery_progress_all_fleets|operation_lm_fleet_productivity|lm_hub_fleet/i },
+    { key: 'hub_summary', rx: /operation_lm_hub_overview|lm_hub_stat|hub.*summary/i },
+    { key: 'onhold',      rx: /onhold|on_hold/i },
     { key: 'exceptions',  rx: /exception|tratativa/i },
-    { key: 'delivery',    rx: /fleet_order|delivery_progress|entrega/i },
   ];
   function classify(url) { for(const r of ROUTES) if(r.rx.test(url)) return r.key; return null; }
 
@@ -268,7 +250,24 @@ window.__relayInspect = function() {
   console.log(JSON.stringify(sample, null, 2));
 };
 window.__relayRaw__ = {};
-10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--or:#EE4D2D;--orl:#fef0ed;--gn:#1d9e75;--gnl:#eaf3de;--am:#ef9f27;--aml:#faeeda;--rd:#e24b4a;--rdl:#fcebeb;--bl:#378add;--bll:#e6f1fb;--gy:#5f5e5a;--gyl:#f1efe8;--tx:#2c2c2a;--tx2:#888780;--tx3:#b4b2a9;--bd:#e0ddd6;--bg:#f8f7f5;--wh:#fff;--r:8px;--rl:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
+.hdr{background:var(--wh);border-bottom:1px solid var(--bd);padding:0 20px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.hdr-dot{width:10px;height:10px;border-radius:50%;background:var(--or);margin-right:8px;flex-shrink:0}
+.hdr-title{font-size:14px;font-weight:600}.hdr-sub{font-size:11px;color:var(--tx2)}
+.hdr-right{display:flex;align-items:center;gap:12px}
+.pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
+.pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
+.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
+.refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
+.refresh-btn:hover{background:var(--bg)}
+.wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
+.alert{background:var(--aml);border:1px solid var(--am);border-radius:var(--r);padding:10px 14px;font-size:12px;color:#854f0b;margin-bottom:12px;display:none;align-items:center;gap:8px}
 .alert.show{display:flex}
 .howto{background:var(--bll);border:1px solid var(--bl);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;font-size:12px;color:#185fa5;line-height:1.7}
 .howto strong{display:block;font-size:13px;margin-bottom:8px}
@@ -440,17 +439,14 @@ function tick(){$('clk').textContent=new Date().toLocaleTimeString('pt-BR');}tic
 function norm(d){
   // Mapeamento real da API SPX (lm_hub_fleet_*)
   // Campos reais da API SPX lm_hub_fleet_*
-  const delivered  = +(d.lm_hub_fleet_delivered_order_qty_eod || d.lm_hub_fleet_delivered_order_qty_td || d.delivered || 0);
+  // Campos confirmados via Network DevTools — operation_lm_delivery_progress_all_fleets
+  const assigned   = +(d.lm_hub_fleet_assigned_order_qty_td || d.lm_hub_fleet_assigned_qty_td || d.assigned || 0);
+  const delivered  = +(d.lm_hub_fleet_delivered_order_qty_eod || d.delivered || 0);
+  const delivering = +(d.lm_hub_fleet_delivering_in_system_order_qty_eod || d.lm_hub_fleet_delivering_in_system_order_qty_td || 0);
   const attempted  = +(d.lm_hub_fleet_attemped_deliver_order_qty || 0);
-  const failed     = +(d.lm_hub_fleet_failed_delivery_order_qty_eod || d.lm_hub_fleet_failed_delivery_order_qty_td || d.failed || 0);
-  const onhold     = +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || d.on_hold || 0);
-  const backlog    = +(d.lm_hub_fleet_backlog_order_qty_td || 0);
-  const pending    = +(d.lm_hub_fleet_pending_to_take_order_qty || 0);
-  // assigned = entregues + falhas + em entrega + onhold + pendentes
-  const assigned   = +(d.lm_hub_fleet_assigned_qty_td || d.assigned || d.assignedCount ||
-                       attempted + pending + onhold || 0);
-  const delivering = Math.max(assigned - delivered - failed - onhold - pending, 0);
-  const pctRaw     = d.lm_hub_fleet_delivered_pct || d.lm_hub_fleet_deliver_process_pct_eod || 0;
+  const failed     = attempted - delivered;  // falhas = tentativas - entregues
+  const onhold     = +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || 0);
+  const pctRaw     = d.lm_hub_fleet_deliver_process_pct_eod || d.lm_hub_fleet_delivered_pct || 0;
   const pct        = parseFloat(pctRaw) * (parseFloat(pctRaw) <= 1 ? 100 : 1);
   // idle tag: 5=Journey Started, 1=Active, 2=Minor Idle (verificar)
   const idleNum   = d.lm_hub_fleet_idle_delivery_tag;
