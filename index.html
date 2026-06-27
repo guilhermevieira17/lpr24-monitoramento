@@ -319,7 +319,9 @@ function renderAll(){const q=(($('srch').value)||'').toLowerCase();const rows=[.
 function srt(k){sKey===k?sDir*=-1:(sKey=k,sDir=-1);renderAll();}
 function checkAlerts(){const idle=DRV.filter(d=>d.idle==='Minor Idle'),fail=DRV.reduce((s,d)=>s+d.failed,0);const msgs=[];if(idle.length)msgs.push(idle.length+' motorista(s) idle');if(fail>0)msgs.push(fail+' falha(s)');const a=$('alert');if(msgs.length){a.classList.add('show');$('alert-msg').textContent=msgs.join(' · ');}else a.classList.remove('show');}
 </script>
-  /**
+</body>
+</html>
+/**
  * relay_spx_lpr24.js  v5 — Supabase como ponte
  * =============================================
  * O relay captura os dados do SPX e salva no Supabase.
@@ -524,33 +526,14 @@ CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHEC
     return _xS.apply(this,arguments);
   };
 
-  // ─── Auto-refresh a cada 5 min ───────────────────────────────────
+  // ─── Auto-refresh a cada 3 min via captura ativa ────────────────
   setInterval(()=>{
-    // Garante aba Expedido Hoje
-    const tabs = [...document.querySelectorAll('button, .ant-radio-button-wrapper, [role="tab"], label')];
-    const hojeTab = tabs.find(t => /expedido.*hoje|hoje|today/i.test(t.textContent.trim()));
-    if (hojeTab) hojeTab.click();
-    setTimeout(()=>{
-      const b=[...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
-      if(b){ _all={}; b.click(); console.log('[relay] auto-refresh acionado'); }
-    }, 500);
-  }, 5 * 60 * 1000);
+    console.log('[relay] auto-refresh ativo...');
+    fetchDriversActive();
+  }, 3 * 60 * 1000);
 
-  // ─── Garante aba "Expedido Hoje" e clica Procurar ───────────────
-  setTimeout(()=>{
-    // 1. Clica na aba "Expedido Hoje" se existir
-    const tabs = [...document.querySelectorAll('button, .ant-radio-button-wrapper, [role="tab"], .tab-item, label')];
-    const hojeTab = tabs.find(t => /expedido.*hoje|hoje|today/i.test(t.textContent.trim()));
-    if (hojeTab) {
-      hojeTab.click();
-      console.log('[relay] ✓ Aba "Expedido Hoje" selecionada');
-    }
-    // 2. Clica Procurar após pequeno delay
-    setTimeout(()=>{
-      const b = [...document.querySelectorAll('button')].find(b=>/procurar|buscar|search/i.test(b.textContent.trim()));
-      if(b) b.click();
-    }, 500);
-  }, 800);
+  // ─── Captura inicial após 1s ─────────────────────────────────────
+  setTimeout(fetchDriversActive, 1000);
 
   // ─── Comando manual ──────────────────────────────────────────────
   window.__relayCapturar=function(n){ if(!_base){console.warn('[relay] Clique em Procurar primeiro.');return;} _all={}; fetchAllPages(_base,_params,n||9); };
@@ -576,6 +559,3 @@ window.__relayInspect = function() {
   console.log(JSON.stringify(sample, null, 2));
 };
 window.__relayRaw__ = {};
-
-</body>
-</html>
