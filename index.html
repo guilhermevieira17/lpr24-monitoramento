@@ -4,9 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Monitoramento LPR-24</title>
-<style>/**
- * relay_spx_lpr24.js  v7 — DOM scraping + MutationObserver
- * Cole no console do SPX (F12) e clique Procurar
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--or:#EE4D2D;--orl:#fef0ed;--gn:#1d9e75;--gnl:#eaf3de;--am:#ef9f27;--aml:#faeeda;--rd:#e24b4a;--rdl:#fcebeb;--bl:#378add;--bll:#e6f1fb;--gy:#5f5e5a;--gyl:#f1efe8;--tx:#2c2c2a;--tx2:#888780;--tx3:#b4b2a9;--bd:#e0ddd6;--bg:#f8f7f5;--wh:#fff;--r:8px;--rl:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
+.hdr{background:var(--wh);border-bottom:1px solid var(--bd);padding:0 20px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.hdr-dot{width:10px;height:10px;border-radius:50%;background:var(--or);margin-right:8px;flex-shrink:0}
+.hdr-title{font-size:14px;font-weight:600}.hdr-sub{font-size:11px;color:var(--tx2)}
+.hdr-right{display:flex;align-items:center;gap:12px}
+.pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
+.pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
+.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}/**
+ * relay_spx_lpr24.js  v8 — DOM scraping com seletores corretos
+ * Cole no console do SPX (F12) — não precisa clicar Procurar
  */
 (function () {
   'use strict';
@@ -16,12 +28,13 @@
   const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzbGh2ZnZ3aHliYXFoa3diZ3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjcwMzgsImV4cCI6MjA5NTM0MzAzOH0.pHUeMP1XDDdchCLA1aklnWUEowO_IJaT2svvR8wajH4';
   const TABLE        = 'fleet_monitor';
 
-  let allDrivers = {};  // key: driver_id, value: driver data
-  let saveTimer  = null;
-  let observer   = null;
-  let lastTotal  = 0;
+  // Seletor real das linhas (descoberto via DevTools)
+  const ROW_SEL = 'tr.ssc-react-rc-table-row';
 
-  // ── Salva no Supabase ─────────────────────────────────────────────
+  let allDrivers = {};
+  let saveTimer  = null;
+
+  // ── Salva no Supabase ──────────────────────────────────────────────
   async function saveToSupabase() {
     const drivers = Object.values(allDrivers);
     if (!drivers.length) return;
@@ -46,10 +59,16 @@
           'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
           'Content-Type': 'application/json', 'Prefer': 'return=minimal'
         },
-        body: JSON.stringify({ hub_id: HUB, ts: new Date().toISOString(), drivers, summary: totals, total: drivers.length })
+        body: JSON.stringify({
+          hub_id: HUB, ts: new Date().toISOString(),
+          drivers, summary: totals, total: drivers.length
+        })
       });
-      if (r.ok) console.log('%c[relay] ✓ ' + drivers.length + ' motoristas salvos', 'color:#1d9e75;font-weight:bold');
-      else console.warn('[relay] Supabase erro:', r.status);
+      if (r.ok) {
+        console.log('%c[relay] ✓ ' + drivers.length + ' motoristas salvos no Supabase', 'color:#1d9e75;font-weight:bold');
+      } else {
+        console.warn('[relay] Supabase erro:', r.status, await r.text());
+      }
     } catch(e) { console.warn('[relay] save erro:', e.message); }
   }
 
@@ -58,165 +77,168 @@
     saveTimer = setTimeout(saveToSupabase, 2000);
   }
 
-  // ── Parseia uma linha da tabela ────────────────────────────────────
+  // ── Parseia uma linha ──────────────────────────────────────────────
+  // Texto exemplo: "[58679] João Victor Alfaro Negretti 2WH SPXOWNFLEET Normal LM... AM 0% 0/111 0% 11,1%"
   function parseRow(row) {
     const cells = row.querySelectorAll('td');
     if (cells.length < 4) return null;
 
-    // Extrai nome e ID do link ou texto
-    const nameLink = row.querySelector('a[href*="driver"], td:first-child a, td:first-child span');
-    const nameText = nameLink?.textContent?.trim() || cells[0]?.textContent?.trim() || '';
-    if (!nameText || nameText.length < 3) return null;
+    const cell0 = cells[0]?.textContent?.trim() || '';
+    const cell1 = cells[1]?.textContent?.trim() || ''; // Fleet Status
+    const cell2 = cells[2]?.textContent?.trim() || ''; // Driver Station
 
-    // ID do href: /driver/123 ou texto [123]
-    const href   = nameLink?.getAttribute('href') || '';
-    const idMatch = href.match(/\/(\d+)/) || nameText.match(/\[(\d+)\]/);
-    const id = idMatch?.[1] || nameText.replace(/\D/g, '').slice(0, 8) || Math.random().toString(36).slice(2);
+    // Nome e ID: "[58679] João Victor Alfaro Negretti 2WH SPXOWNFLEET"
+    const idMatch = cell0.match(/\[(\d+)\]/);
+    if (!idMatch) return null;
+    const id = idMatch[1];
 
-    // Veículo: 4WH ou 2WH do subtexto
-    const subText = cells[0]?.textContent || '';
-    const veh = subText.includes('2WH') ? '2WH' : '4WH';
+    const nameRaw = cell0.replace(/\[\d+\]\s*/, '');
+    const veh     = nameRaw.includes('2WH') ? '2WH' : '4WH';
+    const name    = nameRaw.replace(/\s*(2WH|4WH)\s*.*/, '').trim();
 
-    // Progresso: "0% 0/111" → pct=0, assigned=111, delivered=0
-    const progCell  = Array.from(cells).find(c => c.textContent.includes('/') && c.querySelector('[class*="progress"], .ant-progress, span'));
-    const progText  = progCell?.textContent?.trim() || '';
-    const progMatch = progText.match(/([\d.]+)%[^/]*(\d+)\/(\d+)/);
-    const pct        = progMatch ? parseFloat(progMatch[1]) : 0;
-    const delivered  = progMatch ? parseInt(progMatch[2]) : 0;
-    const assigned   = progMatch ? parseInt(progMatch[3]) : 0;
-
-    // Status idle: procura célula com "Idle", "Ativo", "Viagem Iniciada"
-    let idle = '—';
-    cells.forEach(c => {
-      const t = c.textContent.trim();
-      if (/^(active|ativo)$/i.test(t))           idle = 'Active';
-      else if (/idle leve|minor idle/i.test(t))   idle = 'Minor Idle';
-      else if (/idle$/i.test(t))                  idle = 'Idle';
-      else if (/iniciado|journey started|viagem iniciada/i.test(t)) idle = 'Journey Started';
-    });
-
-    // On-hold: procura número em célula próxima ao fim
-    let onhold = 0;
-    cells.forEach(c => {
-      const t = c.textContent.trim();
-      if (/^\d+$/.test(t) && parseInt(t) > 0 && parseInt(t) < 50) {
-        // Heurística: se a célula tem só número pequeno, pode ser on-hold
-        const idx = Array.from(cells).indexOf(c);
-        if (idx > cells.length - 4) onhold = parseInt(t);
+    // Procura célula com progresso "X% Y/Z"
+    let pct = 0, delivered = 0, assigned = 0, delivering = 0;
+    for (const cell of cells) {
+      const t = cell.textContent.trim();
+      // Formato: "0% 0/111"  ou "32,5% 36/111"
+      const m = t.match(/([\d,]+)%\s+(\d+)\/(\d+)/);
+      if (m) {
+        pct       = parseFloat(m[1].replace(',', '.'));
+        delivered = parseInt(m[2]);
+        assigned  = parseInt(m[3]);
+        delivering= Math.max(assigned - delivered, 0);
+        break;
       }
-    });
+    }
 
-    return { n: nameText.replace(/\[\d+\]\s*/,'').trim(), id, veh, assigned, delivered,
-             delivering: Math.max(assigned - delivered, 0), failed: 0, onhold, pct, idle, time: '—' };
+    // Idle tag — procura em todas as células
+    let idle = 'Journey Started';
+    for (const cell of cells) {
+      const t = cell.textContent.trim();
+      if (/^ativo$/i.test(t) || /^active$/i.test(t))              { idle = 'Active'; break; }
+      if (/idle leve|minor.?idle/i.test(t))                        { idle = 'Minor Idle'; break; }
+      if (/^idle$/i.test(t))                                       { idle = 'Idle'; break; }
+      if (/viagem.?iniciada|journey.?started|iniciado/i.test(t))   { idle = 'Journey Started'; break; }
+    }
+
+    // On-hold — última coluna numérica pequena
+    let onhold = 0;
+    const lastCells = Array.from(cells).slice(-3);
+    for (const cell of lastCells) {
+      const t = cell.textContent.trim();
+      if (/^\d+$/.test(t) && parseInt(t) > 0 && parseInt(t) < 100) {
+        onhold = parseInt(t);
+        break;
+      }
+    }
+
+    // Último evento — procura coluna com "Xh" ou "Xmin"
+    let time = '—';
+    for (const cell of cells) {
+      if (/^\d+[\.,]\d+h$|^\d+h$|^\d+min$/i.test(cell.textContent.trim())) {
+        time = cell.textContent.trim();
+        break;
+      }
+    }
+
+    return {
+      n: name, id, veh,
+      assigned, delivered, delivering,
+      failed: 0, onhold, pct, idle, time,
+      // Campos originais para o painel processar
+      driver_name: name,
+      driver_id: id,
+      vehicle_type: veh,
+      lm_hub_fleet_assigned_order_qty_td: assigned,
+      lm_hub_fleet_delivered_order_qty_eod: delivered,
+      lm_hub_fleet_delivering_in_system_order_qty_eod: delivering,
+      lm_hub_fleet_deliver_process_pct_eod: pct / 100,
+      lm_hub_fleet_onhold_in_system_order_qty_td: onhold,
+      lm_hub_fleet_idle_delivery_tag: idle === 'Active' ? 1 : idle === 'Minor Idle' ? 2 : idle === 'Idle' ? 3 : 5,
+    };
   }
 
-  // ── Scrape da tabela ──────────────────────────────────────────────
-  function scrapeTable() {
-    const rows = document.querySelectorAll('.ant-table-tbody tr.ant-table-row, .ant-table-tbody tr[class*="row"]');
-    if (!rows.length) return 0;
-
+  // ── Scrape da página atual ─────────────────────────────────────────
+  function scrapePage() {
+    const rows = document.querySelectorAll(ROW_SEL);
     let count = 0;
     rows.forEach(row => {
       const d = parseRow(row);
-      if (d && d.id) { allDrivers[d.id] = d; count++; }
+      if (d) { allDrivers[d.id] = d; count++; }
     });
     return count;
   }
 
-  // ── Captura o total de motoristas da paginação ─────────────────────
-  function getTotal() {
-    const totalEl = document.querySelector('.ant-pagination-total-text, [class*="total"]');
-    const m = totalEl?.textContent?.match(/(\d+)/);
-    return m ? parseInt(m[1]) : 0;
+  // ── Total de páginas ────────────────────────────────────────────────
+  function getTotalPages() {
+    // Procura "Total: 157" ou paginação
+    const totalEl = [...document.querySelectorAll('*')].find(el =>
+      el.children.length === 0 && /total.*\d+/i.test(el.textContent)
+    );
+    const m = totalEl?.textContent.match(/(\d+)/);
+    const total = m ? parseInt(m[1]) : 0;
+    const rows = document.querySelectorAll(ROW_SEL).length;
+    return total > 0 ? Math.ceil(total / rows) : 1;
   }
 
-  // ── Navega automaticamente por todas as páginas ───────────────────
+  // ── Captura todas as páginas ────────────────────────────────────────
   async function scrapeAllPages() {
-    const total = getTotal();
-    if (!total) { console.warn('[relay] Total não encontrado'); return; }
-
-    console.log('%c[relay] Scraping ' + total + ' motoristas...', 'color:#EE4D2D;font-weight:bold');
     allDrivers = {};
+    console.log('%c[relay] Iniciando captura...', 'color:#EE4D2D;font-weight:bold');
 
-    // Página atual
-    let scraped = scrapeTable();
-    console.log('[relay] página 1 — ' + scraped + ' linhas');
+    let page = 1;
+    while (true) {
+      await new Promise(r => setTimeout(r, 600));
+      const n = scrapePage();
+      console.log('[relay] página ' + page + ' — ' + n + ' linhas | total: ' + Object.keys(allDrivers).length);
+      if (!n) break;
 
-    // Clica nas próximas páginas
-    const pageSize = 10;
-    const totalPages = Math.ceil(total / pageSize);
-
-    for (let p = 2; p <= Math.min(totalPages, 30); p++) {
-      // Encontra botão da próxima página
-      const nextBtn = document.querySelector('.ant-pagination-next:not(.ant-pagination-disabled) button, li.ant-pagination-next:not(.ant-pagination-disabled)');
+      // Procura botão próxima página ativo
+      const nextBtn = document.querySelector(
+        'li.ssc-pagination-next:not(.ssc-pagination-disabled) button, ' +
+        '.ant-pagination-next:not(.ant-pagination-disabled) button, ' +
+        'li[title="Next Page"]:not([aria-disabled="true"]) button'
+      );
       if (!nextBtn) break;
       nextBtn.click();
-      await new Promise(r => setTimeout(r, 800)); // aguarda tabela atualizar
-      const n = scrapeTable();
-      console.log('[relay] página ' + p + ' — ' + n + ' linhas');
-      if (!n) break;
-      scraped += n;
+      page++;
+      if (page > 30) break; // safety
     }
 
-    console.log('%c[relay] Total: ' + Object.keys(allDrivers).length + ' motoristas únicos', 'color:#1d9e75;font-weight:bold');
-    scheduleSave();
+    const total = Object.keys(allDrivers).length;
+    console.log('%c[relay] Captura concluída: ' + total + ' motoristas', 'color:#1d9e75;font-weight:bold');
+    if (total > 0) scheduleSave();
   }
 
-  // ── MutationObserver: detecta quando a tabela atualiza ────────────
-  function startObserver() {
-    if (observer) observer.disconnect();
-
-    const tableContainer = document.querySelector('.ant-table-wrapper, .ant-table-container, [class*="table"]');
-    if (!tableContainer) {
-      setTimeout(startObserver, 2000);
-      return;
-    }
-
-    let debounce = null;
-    observer = new MutationObserver(() => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        const n = scrapeTable();
-        if (n > 0 && n !== lastTotal) {
-          lastTotal = n;
-          console.log('[relay] tabela atualizada — ' + n + ' linhas na página atual');
-        }
-      }, 300);
-    });
-
-    observer.observe(tableContainer, { childList: true, subtree: true });
-    console.log('[relay] MutationObserver ativo');
-  }
-
-  // ── Comando: captura todas as páginas ─────────────────────────────
+  // ── Comandos ────────────────────────────────────────────────────────
   window.__relayCapturaTotal = scrapeAllPages;
-  window.__relayStatus = function() {
-    console.log('[relay] ' + Object.keys(allDrivers).length + ' motoristas capturados');
-  };
+  window.__relayStatus = () => console.log('[relay] ' + Object.keys(allDrivers).length + ' capturados');
+  window.__relaySalvar  = saveToSupabase;
 
-  // ── Inicia ────────────────────────────────────────────────────────
-  setTimeout(startObserver, 1500);
+  // MutationObserver para detectar mudanças na tabela
+  const obs = new MutationObserver(() => {
+    const rows = document.querySelectorAll(ROW_SEL);
+    if (rows.length > 0) {
+      rows.forEach(row => { const d = parseRow(row); if (d) allDrivers[d.id] = d; });
+    }
+  });
+
+  setTimeout(() => {
+    const container = document.querySelector('table, .ssc-react-rc-table, [class*="table-container"]');
+    if (container) {
+      obs.observe(container, { childList: true, subtree: true });
+      console.log('[relay] Observer ativo');
+    }
+  }, 2000);
 
   console.log(
-    '%c[relay_spx_lpr24] v7 ativo ✓%c  DOM scraping | ' + HUB,
+    '%c[relay_spx_lpr24] v8 ativo ✓%c  DOM scraping | ' + HUB,
     'background:#EE4D2D;color:#fff;padding:3px 8px;border-radius:4px;font-weight:bold', 'color:#888'
   );
-  console.log('%cClique Procurar e depois:%c  __relayCapturaTotal()', 'color:#1d9e75;font-weight:bold', 'font-family:monospace');
+  console.log('%cPara capturar tudo:%c  __relayCapturaTotal()', 'color:#1d9e75;font-weight:bold', 'font-family:monospace');
 
 })();
 
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--or:#EE4D2D;--orl:#fef0ed;--gn:#1d9e75;--gnl:#eaf3de;--am:#ef9f27;--aml:#faeeda;--rd:#e24b4a;--rdl:#fcebeb;--bl:#378add;--bll:#e6f1fb;--gy:#5f5e5a;--gyl:#f1efe8;--tx:#2c2c2a;--tx2:#888780;--tx3:#b4b2a9;--bd:#e0ddd6;--bg:#f8f7f5;--wh:#fff;--r:8px;--rl:12px}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
-.hdr{background:var(--wh);border-bottom:1px solid var(--bd);padding:0 20px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-.hdr-dot{width:10px;height:10px;border-radius:50%;background:var(--or);margin-right:8px;flex-shrink:0}
-.hdr-title{font-size:14px;font-weight:600}.hdr-sub{font-size:11px;color:var(--tx2)}
-.hdr-right{display:flex;align-items:center;gap:12px}
-.pill{display:flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--bd)}
-.pill.on{background:var(--gnl);border-color:var(--gn);color:var(--gn)}.pill.off{background:var(--aml);border-color:var(--am);color:#854f0b}
-.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 1.2s infinite}
-.clock{font-size:12px;font-weight:600;color:var(--tx2);font-variant-numeric:tabular-nums}
 .refresh-btn{font-size:11px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--bd);background:transparent;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:4px}
 .refresh-btn:hover{background:var(--bg)}
 .wrap{padding:16px 20px;max-width:1400px;margin:0 auto}
