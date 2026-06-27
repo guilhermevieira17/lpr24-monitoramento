@@ -8,7 +8,270 @@
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--or:#EE4D2D;--orl:#fef0ed;--gn:#1d9e75;--gnl:#eaf3de;--am:#ef9f27;--aml:#faeeda;--rd:#e24b4a;--rdl:#fcebeb;--bl:#378add;--bll:#e6f1fb;--gy:#5f5e5a;--gyl:#f1efe8;--tx:#2c2c2a;--tx2:#888780;--tx3:#b4b2a9;--bd:#e0ddd6;--bg:#f8f7f5;--wh:#fff;--r:8px;--rl:12px}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);font-size:13px}
-.hdr{background:var(--wh);border-bottom:1px solid var(--bd);padding:0 20px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.hdr{background:var(--wh);border-bottom:1px solid var(--bd);padding:0 20px;height:52px;display:flex;align-items:cen/**
+ * relay_spx_lpr24.js  v5 — Supabase como ponte
+ * =============================================
+ * O relay captura os dados do SPX e salva no Supabase.
+ * O painel faz polling a cada 30s e atualiza automaticamente.
+ * 
+ * COMO USAR:
+ * 1. Abra o painel: guilhermevieira17.github.io/lpr24-monitoramento
+ * 2. Cole este script no console do SPX (F12)
+ * 3. Clique em "Procurar" — dados vão ao Supabase → painel atualiza
+ */
+(function () {
+  'use strict';
+
+  const HUB         = 'LM Hub_PR_SaoJosedosPinhais';
+  const SUPABASE_URL = 'https://tslhvfvwhybaqhkwbgyl.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzbGh2ZnZ3aHliYXFoa3diZ3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjcwMzgsImV4cCI6MjA5NTM0MzAzOH0.pHUeMP1XDDdchCLA1aklnWUEowO_IJaT2svvR8wajH4';
+  const TABLE       = 'fleet_monitor';
+
+  let _all = {}, _base = null, _params = null;
+  let saveTimer = null;
+
+  // ─── Salva no Supabase ───────────────────────────────────────────
+  async function saveToSupabase(drivers, summary) {
+    // Calcula totais diretamente dos dados dos motoristas
+    const totals = drivers.reduce((acc, d) => {
+      acc.assigned  += +(d.lm_hub_fleet_assigned_order_qty_td || d.assigned || 0);
+      acc.delivered += +(d.lm_hub_fleet_delivered_order_qty_eod || d.delivered || 0);
+      acc.delivering+= +(d.lm_hub_fleet_delivering_in_system_order_qty_eod || 0);
+      acc.onhold    += +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || 0);
+      acc.failed    += Math.max(+(d.lm_hub_fleet_attemped_deliver_order_qty||0) - +(d.lm_hub_fleet_delivered_order_qty_eod||0), 0);
+      return acc;
+    }, {assigned:0, delivered:0, delivering:0, onhold:0, failed:0});
+
+    const payload = {
+      hub_id:    HUB,
+      ts:        new Date().toISOString(),
+      drivers:   drivers,
+      summary:   { ...summary, ...totals } || {},
+      total:     drivers.length,
+    };
+
+    try {
+      // Upsert — sempre sobrescreve o registro do hub
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?hub_id=eq.${encodeURIComponent(HUB)}`, {
+        method:  'DELETE',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      });
+
+      const ins = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
+        method:  'POST',
+        headers: {
+          'apikey':       SUPABASE_KEY,
+          'Authorization':'Bearer ' + SUPABASE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer':       'return=minimal',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (ins.ok) {
+        console.log(`%c[relay] ✓ ${drivers.length} motoristas salvos no Supabase`, 'color:#1d9e75;font-weight:bold');
+      } else {
+        const err = await ins.text();
+        console.warn('[relay] Supabase erro:', err);
+        // Tenta criar a tabela se não existir
+        console.log('%c[relay] Tabela não existe. Crie via SQL no Supabase (veja abaixo).', 'color:#d85a30');
+        console.log(`
+-- Cole no SQL Editor do Supabase:
+CREATE TABLE IF NOT EXISTS fleet_monitor (
+  id        BIGSERIAL PRIMARY KEY,
+  hub_id    TEXT NOT NULL,
+  ts        TIMESTAMPTZ DEFAULT NOW(),
+  drivers   JSONB,
+  summary   JSONB,
+  total     INT
+);
+ALTER TABLE fleet_monitor ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHECK (true);
+        `);
+      }
+    } catch(e) {
+      console.warn('[relay] Supabase falhou:', e.message);
+    }
+  }
+
+  // ─── Debounce do save ────────────────────────────────────────────
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const merged = Object.values(_all).flat();
+      if (merged.length > 0) saveToSupabase(merged, window.__relaySummary__);
+    }, 1500);
+  }
+
+  // ─── Extratores ──────────────────────────────────────────────────
+  const ROUTES = [
+    // URLs reais confirmadas via Network DevTools — 26/06/2026
+    { key: 'drivers',     rx: /operation_lm_delivery_progress_all_fleets|operation_lm_fleet_productivity/i },
+    { key: 'hub_summary', rx: /operation_lm_hub|lm_hub_stat|hub.*overview|hub.*summary/i },
+    { key: 'onhold',      rx: /onhold|on_hold/i },
+    { key: 'exceptions',  rx: /exception|tratativa/i },
+  ];
+  function classify(url) { for(const r of ROUTES) if(r.rx.test(url)) return r.key; return null; }
+
+  function extractList(obj) {
+    if(!obj) return null;
+    if(Array.isArray(obj))            return obj;
+    if(Array.isArray(obj.data))       return obj.data;
+    if(Array.isArray(obj.data?.list)) return obj.data.list;
+    if(Array.isArray(obj.result))     return obj.result;
+    if(Array.isArray(obj.drivers))    return obj.drivers;
+    if(obj.data&&typeof obj.data==='object') return extractList(obj.data);
+    return null;
+  }
+
+  function extractPageInfo(obj) {
+    const d = obj?.data || obj;
+    return {
+      page:  d?.pageNo||d?.page||d?.current||d?.pageNum||1,
+      size:  d?.pageSize||d?.page_size||d?.size||10,
+      total: d?.total||d?.totalCount||d?.total_count||0,
+    };
+  }
+
+  function detectBase(url) {
+    try {
+      const u = new URL(url, location.origin);
+      _base   = u.origin + u.pathname;
+      _params = Object.fromEntries(u.searchParams.entries());
+    } catch(e){}
+  }
+
+  function mergeAndSave(list, info, url) {
+    // Salva amostra para debug
+    if (list?.length) window.__relayRaw__[info.page || 1] = list;
+    if(!list?.length) return;
+    _all[info.page] = list;
+    console.log(`[relay] página ${info.page} — ${Object.values(_all).flat().length} motoristas acumulados`);
+    if(!_base) detectBase(url);
+    scheduleSave();
+  }
+
+  async function fetchAllPages(base, params, total) {
+    console.log(`%c[relay] Auto-paginação: ${total} páginas`, 'color:#EE4D2D;font-weight:bold');
+    for(let p=2; p<=Math.min(total,20); p++) {
+      try {
+        const ps = {...params};
+        if('pageNo'  in ps) ps.pageNo=p;  else
+        if('page'    in ps) ps.page=p;    else
+        if('current' in ps) ps.current=p; else
+        if('pageNum' in ps) ps.pageNum=p; else
+        { ps.pageNo=p; ps.page=p; }
+        const url = base+'?'+new URLSearchParams(ps).toString();
+        const res = await fetch(url,{credentials:'include'});
+        const obj = await res.json();
+        const list = extractList(obj);
+        if(list?.length) mergeAndSave(list,{page:p},url);
+        await new Promise(r=>setTimeout(r,350));
+      } catch(e){ console.warn(`[relay] pg ${p}:`,e); }
+    }
+    console.log('%c[relay] Auto-paginação concluída ✓','color:#1d9e75;font-weight:bold');
+  }
+
+  function handle(type, url, obj) {
+    if (DEBUG) console.log('[relay handle]', type, url.split('?')[0].split('/').slice(-2).join('/'));
+    if(type==='drivers'||type==='delivery') {
+      // Debug: loga estrutura bruta da resposta
+      if (DEBUG || window.__relayDebug) console.log('[relay raw]', JSON.stringify(obj).slice(0, 500));
+      const list=extractList(obj), info=extractPageInfo(obj);
+      if(list?.length) {
+        mergeAndSave(list,info,url);
+        if((info.page<=1)&&info.total>info.size&&_base)
+          setTimeout(()=>fetchAllPages(_base,_params,Math.ceil(info.total/info.size)),600);
+      }
+    } else if(/hub_summary/.test(type)) {
+      const d=obj?.data?.data||obj?.data?.result||obj?.data||obj;
+      window.__relaySummary__ = {
+        exp:  d?.totalAssigned||d?.expedited,
+        del:  d?.delivering||d?.inDelivery,
+        done: d?.delivered||d?.success,
+        oh:   d?.onHold||d?.on_hold,
+        perf: d?.centerPerformance||d?.center_performance,
+      };
+    }
+  }
+
+  // ─── Intercepta fetch ────────────────────────────────────────────
+  const _F = window.fetch;
+  window.fetch = async function(input,init) {
+    const url=typeof input==='string'?input:input?.url||'';
+    const type=classify(url);
+    const resp=await _F.apply(this,arguments);
+    if(type) resp.clone().json().then(obj=>handle(type,url,obj)).catch(()=>{});
+    return resp;
+  };
+
+  // ─── Intercepta XHR ──────────────────────────────────────────────
+  const _xO=XMLHttpRequest.prototype.open, _xS=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,url){ this.__u__=url; this.__t__=classify(url); return _xO.apply(this,arguments); };
+  XMLHttpRequest.prototype.send=function(){
+    if(this.__t__){ const s=this; this.addEventListener('load',function(){ try{handle(s.__t__,s.__u__,JSON.parse(s.responseText));}catch(e){} }); }
+    return _xS.apply(this,arguments);
+  };
+
+  // ─── API e captura ativa ─────────────────────────────────────────
+  const API_URL = '/mgmt/api/pc/forward/data/api_mart/mgmt_app/data_api/operation_lm_delivery_progress_all_fleets_br__10m';
+
+  async function fetchDriversActive() {
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*' },
+        body: JSON.stringify({ view_mode: 2 })
+      });
+      const obj = await res.json();
+      const list = obj?.data?.list || obj?.data || [];
+      if (list.length) {
+        console.log('%c[relay] ✓ Captura ativa: ' + list.length + ' motoristas', 'color:#1d9e75;font-weight:bold');
+        _all = {};
+        mergeAndSave(list, { page: 1 }, API_URL);
+      } else {
+        console.warn('[relay] Captura ativa vazia:', JSON.stringify(obj).slice(0, 200));
+      }
+    } catch(e) {
+      console.warn('[relay] Captura ativa erro:', e.message);
+    }
+  }
+
+  // ─── Auto-refresh a cada 3 min via captura ativa ────────────────
+  setInterval(()=>{
+    console.log('[relay] auto-refresh ativo...');
+    fetchDriversActive();
+  }, 3 * 60 * 1000);
+
+  // ─── Captura inicial após 1s ─────────────────────────────────────
+  setTimeout(fetchDriversActive, 1000);
+
+  // ─── Comando manual ──────────────────────────────────────────────
+  window.__relayCapturar=function(n){ if(!_base){console.warn('[relay] Clique em Procurar primeiro.');return;} _all={}; fetchAllPages(_base,_params,n||9); };
+  window.__relaySummary__={};
+
+  // ─── Confirmação ─────────────────────────────────────────────────
+  console.log(
+    '%c[relay_spx_lpr24] v5 ativo ✓%c  Supabase bridge | hub: '+HUB,
+    'background:#EE4D2D;color:#fff;padding:3px 8px;border-radius:4px;font-weight:bold','color:#888'
+  );
+  console.log('%cPainel:%c  guilhermevieira17.github.io/lpr24-monitoramento','color:#1d9e75;font-weight:bold','font-family:monospace');
+  console.log('%cForçar captura:%c  __relayCapturar(9)','color:#378add;font-weight:bold','font-family:monospace');
+
+})();
+
+// ─── DEBUG: inspeciona estrutura da API ──────────────────────────
+// Cole no console do SPX após o relay:
+// __relayInspect()
+window.__relayInspect = function() {
+  const sample = Object.values(window.__relayRaw__ || {})[0]?.[0];
+  if (!sample) { console.log('[relay] Nenhum dado capturado ainda. Clique em Procurar primeiro.'); return; }
+  console.log('%c[relay] Estrutura do motorista:', 'color:#EE4D2D;font-weight:bold');
+  console.log(JSON.stringify(sample, null, 2));
+};
+window.__relayRaw__ = {};
+ter;justify-content:space-between;position:sticky;top:0;z-index:100}
 .hdr-dot{width:10px;height:10px;border-radius:50%;background:var(--or);margin-right:8px;flex-shrink:0}
 .hdr-title{font-size:14px;font-weight:600}.hdr-sub{font-size:11px;color:var(--tx2)}
 .hdr-right{display:flex;align-items:center;gap:12px}
@@ -321,241 +584,3 @@ function checkAlerts(){const idle=DRV.filter(d=>d.idle==='Minor Idle'),fail=DRV.
 </script>
 </body>
 </html>
-/**
- * relay_spx_lpr24.js  v5 — Supabase como ponte
- * =============================================
- * O relay captura os dados do SPX e salva no Supabase.
- * O painel faz polling a cada 30s e atualiza automaticamente.
- * 
- * COMO USAR:
- * 1. Abra o painel: guilhermevieira17.github.io/lpr24-monitoramento
- * 2. Cole este script no console do SPX (F12)
- * 3. Clique em "Procurar" — dados vão ao Supabase → painel atualiza
- */
-(function () {
-  'use strict';
-
-  const HUB         = 'LM Hub_PR_SaoJosedosPinhais';
-  const SUPABASE_URL = 'https://tslhvfvwhybaqhkwbgyl.supabase.co';
-  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzbGh2ZnZ3aHliYXFoa3diZ3lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjcwMzgsImV4cCI6MjA5NTM0MzAzOH0.pHUeMP1XDDdchCLA1aklnWUEowO_IJaT2svvR8wajH4';
-  const TABLE       = 'fleet_monitor';
-
-  let _all = {}, _base = null, _params = null;
-  let saveTimer = null;
-
-  // ─── Salva no Supabase ───────────────────────────────────────────
-  async function saveToSupabase(drivers, summary) {
-    // Calcula totais diretamente dos dados dos motoristas
-    const totals = drivers.reduce((acc, d) => {
-      acc.assigned  += +(d.lm_hub_fleet_assigned_order_qty_td || d.assigned || 0);
-      acc.delivered += +(d.lm_hub_fleet_delivered_order_qty_eod || d.delivered || 0);
-      acc.delivering+= +(d.lm_hub_fleet_delivering_in_system_order_qty_eod || 0);
-      acc.onhold    += +(d.lm_hub_fleet_onhold_in_system_order_qty_td || d.onHold || 0);
-      acc.failed    += Math.max(+(d.lm_hub_fleet_attemped_deliver_order_qty||0) - +(d.lm_hub_fleet_delivered_order_qty_eod||0), 0);
-      return acc;
-    }, {assigned:0, delivered:0, delivering:0, onhold:0, failed:0});
-
-    const payload = {
-      hub_id:    HUB,
-      ts:        new Date().toISOString(),
-      drivers:   drivers,
-      summary:   { ...summary, ...totals } || {},
-      total:     drivers.length,
-    };
-
-    try {
-      // Upsert — sempre sobrescreve o registro do hub
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?hub_id=eq.${encodeURIComponent(HUB)}`, {
-        method:  'DELETE',
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
-      });
-
-      const ins = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
-        method:  'POST',
-        headers: {
-          'apikey':       SUPABASE_KEY,
-          'Authorization':'Bearer ' + SUPABASE_KEY,
-          'Content-Type': 'application/json',
-          'Prefer':       'return=minimal',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (ins.ok) {
-        console.log(`%c[relay] ✓ ${drivers.length} motoristas salvos no Supabase`, 'color:#1d9e75;font-weight:bold');
-      } else {
-        const err = await ins.text();
-        console.warn('[relay] Supabase erro:', err);
-        // Tenta criar a tabela se não existir
-        console.log('%c[relay] Tabela não existe. Crie via SQL no Supabase (veja abaixo).', 'color:#d85a30');
-        console.log(`
--- Cole no SQL Editor do Supabase:
-CREATE TABLE IF NOT EXISTS fleet_monitor (
-  id        BIGSERIAL PRIMARY KEY,
-  hub_id    TEXT NOT NULL,
-  ts        TIMESTAMPTZ DEFAULT NOW(),
-  drivers   JSONB,
-  summary   JSONB,
-  total     INT
-);
-ALTER TABLE fleet_monitor ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "anon_all" ON fleet_monitor FOR ALL TO anon USING (true) WITH CHECK (true);
-        `);
-      }
-    } catch(e) {
-      console.warn('[relay] Supabase falhou:', e.message);
-    }
-  }
-
-  // ─── Debounce do save ────────────────────────────────────────────
-  function scheduleSave() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      const merged = Object.values(_all).flat();
-      if (merged.length > 0) saveToSupabase(merged, window.__relaySummary__);
-    }, 1500);
-  }
-
-  // ─── Extratores ──────────────────────────────────────────────────
-  const ROUTES = [
-    // URLs reais confirmadas via Network DevTools — 26/06/2026
-    { key: 'drivers',     rx: /operation_lm_delivery_progress_all_fleets|operation_lm_fleet_productivity/i },
-    { key: 'hub_summary', rx: /operation_lm_hub|lm_hub_stat|hub.*overview|hub.*summary/i },
-    { key: 'onhold',      rx: /onhold|on_hold/i },
-    { key: 'exceptions',  rx: /exception|tratativa/i },
-  ];
-  function classify(url) { for(const r of ROUTES) if(r.rx.test(url)) return r.key; return null; }
-
-  function extractList(obj) {
-    if(!obj) return null;
-    if(Array.isArray(obj))            return obj;
-    if(Array.isArray(obj.data))       return obj.data;
-    if(Array.isArray(obj.data?.list)) return obj.data.list;
-    if(Array.isArray(obj.result))     return obj.result;
-    if(Array.isArray(obj.drivers))    return obj.drivers;
-    if(obj.data&&typeof obj.data==='object') return extractList(obj.data);
-    return null;
-  }
-
-  function extractPageInfo(obj) {
-    const d = obj?.data || obj;
-    return {
-      page:  d?.pageNo||d?.page||d?.current||d?.pageNum||1,
-      size:  d?.pageSize||d?.page_size||d?.size||10,
-      total: d?.total||d?.totalCount||d?.total_count||0,
-    };
-  }
-
-  function detectBase(url) {
-    try {
-      const u = new URL(url, location.origin);
-      _base   = u.origin + u.pathname;
-      _params = Object.fromEntries(u.searchParams.entries());
-    } catch(e){}
-  }
-
-  function mergeAndSave(list, info, url) {
-    // Salva amostra para debug
-    if (list?.length) window.__relayRaw__[info.page || 1] = list;
-    if(!list?.length) return;
-    _all[info.page] = list;
-    console.log(`[relay] página ${info.page} — ${Object.values(_all).flat().length} motoristas acumulados`);
-    if(!_base) detectBase(url);
-    scheduleSave();
-  }
-
-  async function fetchAllPages(base, params, total) {
-    console.log(`%c[relay] Auto-paginação: ${total} páginas`, 'color:#EE4D2D;font-weight:bold');
-    for(let p=2; p<=Math.min(total,20); p++) {
-      try {
-        const ps = {...params};
-        if('pageNo'  in ps) ps.pageNo=p;  else
-        if('page'    in ps) ps.page=p;    else
-        if('current' in ps) ps.current=p; else
-        if('pageNum' in ps) ps.pageNum=p; else
-        { ps.pageNo=p; ps.page=p; }
-        const url = base+'?'+new URLSearchParams(ps).toString();
-        const res = await fetch(url,{credentials:'include'});
-        const obj = await res.json();
-        const list = extractList(obj);
-        if(list?.length) mergeAndSave(list,{page:p},url);
-        await new Promise(r=>setTimeout(r,350));
-      } catch(e){ console.warn(`[relay] pg ${p}:`,e); }
-    }
-    console.log('%c[relay] Auto-paginação concluída ✓','color:#1d9e75;font-weight:bold');
-  }
-
-  function handle(type, url, obj) {
-    if (DEBUG) console.log('[relay handle]', type, url.split('?')[0].split('/').slice(-2).join('/'));
-    if(type==='drivers'||type==='delivery') {
-      // Debug: loga estrutura bruta da resposta
-      if (DEBUG || window.__relayDebug) console.log('[relay raw]', JSON.stringify(obj).slice(0, 500));
-      const list=extractList(obj), info=extractPageInfo(obj);
-      if(list?.length) {
-        mergeAndSave(list,info,url);
-        if((info.page<=1)&&info.total>info.size&&_base)
-          setTimeout(()=>fetchAllPages(_base,_params,Math.ceil(info.total/info.size)),600);
-      }
-    } else if(/hub_summary/.test(type)) {
-      const d=obj?.data?.data||obj?.data?.result||obj?.data||obj;
-      window.__relaySummary__ = {
-        exp:  d?.totalAssigned||d?.expedited,
-        del:  d?.delivering||d?.inDelivery,
-        done: d?.delivered||d?.success,
-        oh:   d?.onHold||d?.on_hold,
-        perf: d?.centerPerformance||d?.center_performance,
-      };
-    }
-  }
-
-  // ─── Intercepta fetch ────────────────────────────────────────────
-  const _F = window.fetch;
-  window.fetch = async function(input,init) {
-    const url=typeof input==='string'?input:input?.url||'';
-    const type=classify(url);
-    const resp=await _F.apply(this,arguments);
-    if(type) resp.clone().json().then(obj=>handle(type,url,obj)).catch(()=>{});
-    return resp;
-  };
-
-  // ─── Intercepta XHR ──────────────────────────────────────────────
-  const _xO=XMLHttpRequest.prototype.open, _xS=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(m,url){ this.__u__=url; this.__t__=classify(url); return _xO.apply(this,arguments); };
-  XMLHttpRequest.prototype.send=function(){
-    if(this.__t__){ const s=this; this.addEventListener('load',function(){ try{handle(s.__t__,s.__u__,JSON.parse(s.responseText));}catch(e){} }); }
-    return _xS.apply(this,arguments);
-  };
-
-  // ─── Auto-refresh a cada 3 min via captura ativa ────────────────
-  setInterval(()=>{
-    console.log('[relay] auto-refresh ativo...');
-    fetchDriversActive();
-  }, 3 * 60 * 1000);
-
-  // ─── Captura inicial após 1s ─────────────────────────────────────
-  setTimeout(fetchDriversActive, 1000);
-
-  // ─── Comando manual ──────────────────────────────────────────────
-  window.__relayCapturar=function(n){ if(!_base){console.warn('[relay] Clique em Procurar primeiro.');return;} _all={}; fetchAllPages(_base,_params,n||9); };
-  window.__relaySummary__={};
-
-  // ─── Confirmação ─────────────────────────────────────────────────
-  console.log(
-    '%c[relay_spx_lpr24] v5 ativo ✓%c  Supabase bridge | hub: '+HUB,
-    'background:#EE4D2D;color:#fff;padding:3px 8px;border-radius:4px;font-weight:bold','color:#888'
-  );
-  console.log('%cPainel:%c  guilhermevieira17.github.io/lpr24-monitoramento','color:#1d9e75;font-weight:bold','font-family:monospace');
-  console.log('%cForçar captura:%c  __relayCapturar(9)','color:#378add;font-weight:bold','font-family:monospace');
-
-})();
-
-// ─── DEBUG: inspeciona estrutura da API ──────────────────────────
-// Cole no console do SPX após o relay:
-// __relayInspect()
-window.__relayInspect = function() {
-  const sample = Object.values(window.__relayRaw__ || {})[0]?.[0];
-  if (!sample) { console.log('[relay] Nenhum dado capturado ainda. Clique em Procurar primeiro.'); return; }
-  console.log('%c[relay] Estrutura do motorista:', 'color:#EE4D2D;font-weight:bold');
-  console.log(JSON.stringify(sample, null, 2));
-};
-window.__relayRaw__ = {};
